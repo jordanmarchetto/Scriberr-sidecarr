@@ -1,0 +1,9 @@
+services:
+  scriberr-sidecarr:
+    image: docker.io/jordanmarchetto/scriberr-sidecarr:latest
+    restart: unless-stopped
+    env_file:
+      - .env
+    volumes:
+      - ${SIDECARR_TRANSCRIPTS_HOST_PATH:-/media/holocron/Storage/Backups/voice_recordings/scriberr_data/app_data/transcripts}:/watch/transcripts:ro
+      - ${SIDECARR_DATA_HOST_PATH:-./data}:/app/data
