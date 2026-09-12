@@ -1,4 +1,5 @@
 .env
+CONTEXT.md
 data/
 node_modules/
 dist/
