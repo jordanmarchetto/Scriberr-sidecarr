@@ -22,6 +22,10 @@ const configSchema = z.object({
   SIDECARR_SUMMARY_TEMPLATE: z.string().optional().default("Default"),
   SIDECARR_SUMMARY_POLL_INTERVAL_SECONDS: z.coerce.number().int().positive().default(30),
   SIDECARR_SUMMARY_TIMEOUT_SECONDS: z.coerce.number().int().positive().default(3600),
+  SIDECARR_WEBHOOK_HOST: z.string().min(1).default("0.0.0.0"),
+  SIDECARR_WEBHOOK_PORT: z.coerce.number().int().min(1).max(65535).default(8080),
+  SIDECARR_WEBHOOK_PATH: z.string().startsWith("/").default("/webhooks/scriberr"),
+  SIDECARR_WEBHOOK_SECRET: z.string().optional(),
   SIDECARR_DB_PATH: z.string().default("/app/data/sidecar.db")
 });
 
@@ -41,6 +45,10 @@ export type Config = {
   summaryTemplate?: string;
   summaryPollIntervalMs: number;
   summaryTimeoutMs: number;
+  webhookHost: string;
+  webhookPort: number;
+  webhookPath: string;
+  webhookSecret?: string;
   dbPath: string;
 };
 
@@ -62,6 +70,10 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): Config {
     summaryTemplate: parsed.SIDECARR_SUMMARY_TEMPLATE,
     summaryPollIntervalMs: parsed.SIDECARR_SUMMARY_POLL_INTERVAL_SECONDS * 1000,
     summaryTimeoutMs: parsed.SIDECARR_SUMMARY_TIMEOUT_SECONDS * 1000,
+    webhookHost: parsed.SIDECARR_WEBHOOK_HOST,
+    webhookPort: parsed.SIDECARR_WEBHOOK_PORT,
+    webhookPath: parsed.SIDECARR_WEBHOOK_PATH,
+    webhookSecret: parsed.SIDECARR_WEBHOOK_SECRET,
     dbPath: parsed.SIDECARR_DB_PATH
   };
 }

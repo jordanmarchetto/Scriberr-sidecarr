@@ -1,5 +1,5 @@
 import Database from "better-sqlite3";
-import type { JobRow, SidecarState } from "./types.js";
+import type { JobRow, ScriberrWebhookPayload, SidecarState, WebhookSignalRow } from "./types.js";
 
 export type PendingEvent = {
   id: number;
@@ -52,6 +52,18 @@ export class StateStore {
       );
 
       CREATE INDEX IF NOT EXISTS events_pending_idx ON events(published_at, id);
+
+      CREATE TABLE IF NOT EXISTS webhook_signals (
+        delivery_id TEXT PRIMARY KEY,
+        job_id TEXT NOT NULL,
+        event_type TEXT NOT NULL,
+        occurred_at TEXT NOT NULL,
+        received_at TEXT NOT NULL,
+        processed_at TEXT
+      );
+
+      CREATE INDEX IF NOT EXISTS webhook_signals_pending_idx
+        ON webhook_signals(processed_at, received_at);
     `);
   }
 
@@ -59,18 +71,50 @@ export class StateStore {
     this.db.close();
   }
 
-  discover(jobId: string, folder: string, now: string): { inserted: boolean; job: JobRow } {
+  discover(jobId: string, folder: string, now: string, source = "filesystem"): { inserted: boolean; job: JobRow } {
     const existing = this.getJob(jobId);
     if (existing) {
-      this.db.prepare("UPDATE jobs SET last_seen_at = ?, updated_at = ? WHERE job_id = ?").run(now, now, jobId);
+      this.db.prepare(`
+        UPDATE jobs
+        SET last_seen_at = ?, transcript_folder = CASE WHEN ? <> '' THEN ? ELSE transcript_folder END, updated_at = ?
+        WHERE job_id = ?
+      `).run(now, folder, folder, now, jobId);
       return { inserted: false, job: this.getJob(jobId)! };
     }
     this.db.prepare(`
       INSERT INTO jobs (job_id, source, transcript_folder, first_seen_at, last_seen_at,
         sidecar_state, attempt, created_at, updated_at)
-      VALUES (?, 'filesystem', ?, ?, ?, 'discovered', 1, ?, ?)
-    `).run(jobId, folder, now, now, now, now);
+      VALUES (?, ?, ?, ?, ?, 'discovered', 1, ?, ?)
+    `).run(jobId, source, folder, now, now, now, now);
     return { inserted: true, job: this.getJob(jobId)! };
+  }
+
+  recordWebhookSignal(deliveryId: string, payload: ScriberrWebhookPayload, receivedAt: string): boolean {
+    const result = this.db.prepare(`
+      INSERT OR IGNORE INTO webhook_signals
+        (delivery_id, job_id, event_type, occurred_at, received_at)
+      VALUES (?, ?, ?, ?, ?)
+    `).run(deliveryId, payload.job_id, payload.event, payload.occurred_at, receivedAt);
+    return result.changes === 1;
+  }
+
+  pendingWebhookSignals(limit = 100): WebhookSignalRow[] {
+    return this.db.prepare(`
+      SELECT delivery_id, job_id, event_type, occurred_at, received_at
+      FROM webhook_signals
+      WHERE processed_at IS NULL
+      ORDER BY received_at
+      LIMIT ?
+    `).all(limit) as WebhookSignalRow[];
+  }
+
+  markWebhookSignalsProcessed(deliveryIds: string[], now: string): void {
+    if (deliveryIds.length === 0) return;
+    const placeholders = deliveryIds.map(() => "?").join(", ");
+    this.db.prepare(`
+      UPDATE webhook_signals SET processed_at = ?
+      WHERE delivery_id IN (${placeholders})
+    `).run(now, ...deliveryIds);
   }
 
   getJob(jobId: string): JobRow | undefined {

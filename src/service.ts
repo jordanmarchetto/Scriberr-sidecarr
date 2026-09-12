@@ -5,12 +5,13 @@ import type { Config } from "./config.js";
 import { StateStore } from "./db.js";
 import { MqttPublisher } from "./mqtt-publisher.js";
 import { ScriberrApi, ScriberrApiError } from "./scriberr-api.js";
-import type { JobRow, ScriberrJob, SidecarState } from "./types.js";
+import type { JobRow, ScriberrJob, SidecarState, WebhookSignalRow } from "./types.js";
 
 const jobIdPattern = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
 
 export class SidecarService {
   private cycleRunning = false;
+  private cycleQueued = false;
   private readonly summaryCheckedAt = new Map<string, number>();
 
   constructor(
@@ -22,12 +23,38 @@ export class SidecarService {
   ) {}
 
   async runCycle(): Promise<void> {
-    if (this.cycleRunning) return;
+    if (this.cycleRunning) {
+      this.cycleQueued = true;
+      return;
+    }
     this.cycleRunning = true;
     try {
-      await this.scan();
-      for (const job of this.db.listJobs()) await this.poll(job);
-      await this.mqtt.flush();
+      do {
+        this.cycleQueued = false;
+        await this.scan();
+        const signals = this.db.pendingWebhookSignals();
+        const signalsByJob = new Map<string, WebhookSignalRow[]>();
+        for (const signal of signals) {
+          const jobSignals = signalsByJob.get(signal.job_id) ?? [];
+          jobSignals.push(signal);
+          signalsByJob.set(signal.job_id, jobSignals);
+          const result = this.db.discover(signal.job_id, "", signal.received_at, "webhook");
+          if (result.inserted) {
+            this.emit(result.job, "job_found", "discovered", "discovered", null);
+            this.logger.info({ jobId: signal.job_id, source: "webhook" }, "job discovered");
+          }
+        }
+        for (const job of this.db.listJobs()) {
+          const jobSignals = signalsByJob.get(job.job_id) ?? [];
+          if (await this.poll(job, jobSignals)) {
+            this.db.markWebhookSignalsProcessed(
+              jobSignals.map((signal) => signal.delivery_id),
+              new Date().toISOString()
+            );
+          }
+        }
+        await this.mqtt.flush();
+      } while (this.cycleQueued);
     } finally {
       this.cycleRunning = false;
     }
@@ -53,7 +80,7 @@ export class SidecarService {
     }
   }
 
-  private async poll(previous: JobRow): Promise<void> {
+  private async poll(previous: JobRow, signals: WebhookSignalRow[] = []): Promise<boolean> {
     const checkedAt = new Date().toISOString();
     let job: ScriberrJob;
     try {
@@ -61,7 +88,7 @@ export class SidecarService {
     } catch (error) {
       this.db.updateJob(previous.job_id, { last_checked_at: checkedAt, last_error: this.safeError(error) });
       this.logger.warn({ jobId: previous.job_id, error: this.safeError(error) }, "Scriberr job lookup failed");
-      return;
+      return false;
     }
 
     let current = this.db.getJob(previous.job_id)!;
@@ -78,23 +105,34 @@ export class SidecarService {
 
     if (job.status === "uploaded" || job.status === "pending") {
       this.transition(current, "pending_transcription", "pending_transcription", job.status, job.title);
-      return;
+      return true;
     }
     if (job.status === "processing") {
       this.transition(current, "processing_transcription", "transcription_processing", job.status, job.title);
-      return;
+      return true;
     }
     if (job.status === "failed") {
       this.transition(current, "transcription_failed", "transcription_failed", job.status, job.title);
-      return;
+      return true;
     }
-    if (job.status === "completed") await this.handleCompleted(current, job);
+    if (job.status === "completed") {
+      await this.handleCompleted(
+        current,
+        job,
+        signals.some((signal) => signal.event_type.startsWith("summary."))
+      );
+      if (signals.some((signal) => signal.event_type === "summary.failed")) {
+        current = this.db.getJob(previous.job_id)!;
+        this.transition(current, "summary_failed", "summary_failed", job.status, job.title);
+      }
+    }
+    return true;
   }
 
-  private async handleCompleted(row: JobRow, job: ScriberrJob): Promise<void> {
+  private async handleCompleted(row: JobRow, job: ScriberrJob, forceSummaryCheck = false): Promise<void> {
     const nowMs = Date.now();
     const lastSummaryCheck = this.summaryCheckedAt.get(job.id) ?? 0;
-    if (nowMs - lastSummaryCheck < this.config.summaryPollIntervalMs) return;
+    if (!forceSummaryCheck && nowMs - lastSummaryCheck < this.config.summaryPollIntervalMs) return;
     this.summaryCheckedAt.set(job.id, nowMs);
     let current = this.db.getJob(row.job_id)!;
     if (!["transcription_complete", "summary_pending", "summary_processing", "summary_complete", "summary_failed"].includes(current.sidecar_state)) {
