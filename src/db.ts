@@ -195,14 +195,15 @@ export class StateStore {
     return this.getJob(jobId)!;
   }
 
-  ensureEvent(job: JobRow, eventType: string, payload: object): void {
+  ensureEvent(job: JobRow, eventType: string, payload: object): boolean {
     const now = new Date().toISOString();
     const occurrenceKey = `${job.attempt}:${eventType}`;
-    this.db.prepare(`
+    const result = this.db.prepare(`
       INSERT OR IGNORE INTO events
         (job_id, event_type, occurrence_key, payload_json, created_at)
       VALUES (?, ?, ?, ?, ?)
     `).run(job.job_id, eventType, occurrenceKey, JSON.stringify(payload), now);
+    return result.changes === 1;
   }
 
   pendingEvents(limit = 100): PendingEvent[] {

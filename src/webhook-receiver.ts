@@ -126,6 +126,12 @@ export class WebhookReceiver {
       const inserted = this.db.recordWebhookSignal(deliveryId, payload, new Date().toISOString());
       this.respond(response, 202, { accepted: true, duplicate: !inserted });
       this.metrics.incrementWebhook(inserted ? "accepted" : "duplicate");
+      this.logger.debug({
+        deliveryId,
+        jobId: payload.job_id,
+        event: payload.event,
+        duplicate: !inserted
+      }, inserted ? "webhook accepted" : "duplicate webhook ignored");
 
       if (inserted) {
         void Promise.resolve().then(() => this.onSignal()).catch((error: unknown) => {
@@ -136,7 +142,15 @@ export class WebhookReceiver {
     } catch (error) {
       const status = error instanceof HttpError ? error.status : 500;
       const message = error instanceof HttpError ? error.message : "internal server error";
-      if (status === 500) this.logger.error({ error }, "webhook request failed");
+      const details = {
+        method: request.method,
+        path: request.url,
+        deliveryId: this.header(request, "x-scriberr-delivery") || undefined,
+        status,
+        error: sanitizeError(status === 500 ? error : message)
+      };
+      if (status === 500) this.logger.error(details, "webhook request failed");
+      else this.logger.warn(details, "webhook request rejected");
       this.respond(response, status, { error: message });
       this.metrics.incrementWebhook(status === 500 ? "error" : "invalid");
     }

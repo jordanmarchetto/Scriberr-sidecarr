@@ -28,6 +28,12 @@ export class SidecarService {
   ) {}
 
   setFilesystemDiscoveryEnabled(enabled: boolean): void {
+    if (this.filesystemDiscoveryEnabled !== enabled) {
+      this.logger.info({
+        configuredDiscoveryMode: this.config.discoveryMode,
+        effectiveDiscoveryMode: enabled ? "filesystem" : "webhook"
+      }, "discovery mode changed");
+    }
     this.filesystemDiscoveryEnabled = enabled;
   }
 
@@ -237,9 +243,19 @@ export class SidecarService {
 
   private transition(row: JobRow, state: SidecarState, eventType: string, status: string, title?: string | null): void {
     if (row.sidecar_state === state) return;
+    const previousState = row.sidecar_state;
     this.db.updateJob(row.job_id, { sidecar_state: state });
     const updated = this.db.getJob(row.job_id)!;
     this.emit(updated, eventType, state, status, title);
+    this.logger.info({
+      jobId: row.job_id,
+      attempt: updated.attempt,
+      source: updated.source,
+      previousState,
+      state,
+      scriberrStatus: status,
+      eventType
+    }, "job state changed");
     if (eventType.startsWith("transcription_")) this.db.updateJob(row.job_id, { transcription_event_at: new Date().toISOString() });
     if (eventType.startsWith("summary_")) this.db.updateJob(row.job_id, { summary_event_at: new Date().toISOString() });
   }
@@ -254,7 +270,7 @@ export class SidecarService {
       if (startedAt) this.metrics.observeDuration("summary", (completedAt - Date.parse(startedAt)) / 1000);
     }
 
-    this.db.ensureEvent(row, eventType, {
+    const inserted = this.db.ensureEvent(row, eventType, {
       event: eventType,
       job_id: row.job_id,
       title: title ?? null,
@@ -265,6 +281,12 @@ export class SidecarService {
       scriberr_url: this.config.scriberrUrl,
       ...(eventType.endsWith("_failed") && row.last_error ? { error: this.safeError(row.last_error) } : {})
     });
+    this.logger.debug({
+      jobId: row.job_id,
+      attempt: row.attempt,
+      eventType,
+      queued: inserted
+    }, inserted ? "MQTT event queued" : "MQTT event already queued");
   }
 
   private safeError(error: unknown): string {

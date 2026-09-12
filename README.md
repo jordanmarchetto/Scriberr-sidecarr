@@ -2,6 +2,25 @@
 
 A small sidecar that discovers Scriberr transcription jobs, confirms lifecycle state through Scriberr's API, and publishes metadata-only events over MQTT.
 
+## What it does
+
+With a webhook-capable Scriberr installation—such as the fork with webhooks and auto-summary:
+
+1. Sidecarr registers its own webhook.
+2. Scriberr notifies Sidecarr when recordings, transcriptions, and summaries change.
+3. Sidecarr confirms the current state through Scriberr's API.
+4. Sidecarr publishes MQTT lifecycle events.
+
+With an unmodified Scriberr installation:
+
+1. Sidecarr sees that webhook management is unavailable and falls back automatically.
+2. It watches Scriberr's transcript directory to discover jobs.
+3. It polls Scriberr's API for state changes.
+4. If configured, it asks Scriberr to generate missing summaries.
+5. It publishes the same MQTT lifecycle events.
+
+In both cases, SQLite prevents duplicate events and preserves pending MQTT messages across restarts. Sidecarr does not transcribe recordings or generate summaries itself; Scriberr does that work.
+
 ## Quick start
 
 Sidecarr assumes it shares a user-defined Docker network with Scriberr. The services may be in the same Compose project or in separate projects attached to the same external network.
@@ -98,6 +117,14 @@ Deployment assumption: deploy a release containing webhook and auto-summary comp
 - transcription and summary durations
 
 Keep both endpoints on a trusted Docker network unless they are protected by an authenticated reverse proxy.
+
+## Troubleshooting logs
+
+Sidecarr writes structured JSON logs to standard output, so they appear in Docker logs:
+
+    docker compose logs -f scriberr-sidecarr
+
+The default `LOG_LEVEL=info` records startup configuration, discovery-mode changes, webhook compatibility fallback, job state changes, retries, and failures. Temporarily set `LOG_LEVEL=debug` to also see accepted webhooks, queued events, and successful MQTT publications. Logs include IDs and state metadata, but not API keys, webhook secrets, transcripts, summaries, or MQTT passwords.
 
 ## Events
 

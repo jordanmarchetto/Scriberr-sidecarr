@@ -2,6 +2,7 @@ import { randomBytes } from "node:crypto";
 import pino from "pino";
 import type { Config } from "./config.js";
 import { StateStore } from "./db.js";
+import { sanitizeError } from "./errors.js";
 import { ScriberrApi, ScriberrApiError } from "./scriberr-api.js";
 import type { ScriberrWebhook, ScriberrWebhookEvent, ScriberrWebhookInput } from "./types.js";
 
@@ -49,6 +50,8 @@ export class WebhookRegistration {
     if (this.config.discoveryMode === "filesystem" || this.unsupported) return false;
     if (this.active && Date.now() < this.nextCheckAt) return true;
 
+    this.logger.debug("reconciling Scriberr webhook registration");
+
     let hooks: ScriberrWebhook[];
     try {
       hooks = await this.api.listWebhooks();
@@ -57,7 +60,8 @@ export class WebhookRegistration {
         this.unsupported = true;
         this.active = false;
         this.logger.info(
-          "Scriberr does not support webhook management; using filesystem discovery and API polling"
+          { status: error.status, configuredDiscoveryMode: this.config.discoveryMode },
+          "Scriberr webhook API is unsupported; using filesystem discovery and API polling"
         );
         return false;
       }
@@ -84,14 +88,15 @@ export class WebhookRegistration {
     };
 
     try {
+      const action = hook ? "updated" : "created";
       const managed = hook
         ? await this.api.updateWebhook(hook.id, input)
         : await this.api.createWebhook(input);
       this.db.setSetting(webhookIdSetting, managed.id);
       if (!this.active) {
         this.logger.info(
-          { webhookId: managed.id, callbackUrl: managed.url },
-          "Scriberr webhook registration active"
+          { webhookId: managed.id },
+          `Scriberr webhook registration ${action}`
         );
       }
       this.active = true;
@@ -112,6 +117,6 @@ export class WebhookRegistration {
   }
 
   private errorMessage(error: unknown): string {
-    return error instanceof Error ? error.message : String(error);
+    return sanitizeError(error instanceof Error ? error.message : error);
   }
 }
