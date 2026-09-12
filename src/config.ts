@@ -7,6 +7,7 @@ const bool = z
   .transform((value) => ["1", "true", "yes", "on"].includes(value.toLowerCase()));
 
 const configSchema = z.object({
+  SIDECARR_DISCOVERY_MODE: z.enum(["webhook", "filesystem"]).default("webhook"),
   SIDECARR_WATCH_FOLDER: z.string().default("/watch/transcripts"),
   SIDECARR_SCAN_INTERVAL_SECONDS: z.coerce.number().int().positive().default(30),
   SIDECARR_SCRIBERR_URL: z.string().url(),
@@ -22,10 +23,16 @@ const configSchema = z.object({
   SIDECARR_SUMMARY_TEMPLATE: z.string().optional().default("Default"),
   SIDECARR_SUMMARY_POLL_INTERVAL_SECONDS: z.coerce.number().int().positive().default(30),
   SIDECARR_SUMMARY_TIMEOUT_SECONDS: z.coerce.number().int().positive().default(3600),
+  SIDECARR_WEBHOOK_HOST: z.string().min(1).default("0.0.0.0"),
+  SIDECARR_WEBHOOK_PORT: z.coerce.number().int().min(1).max(65535).default(8080),
+  SIDECARR_WEBHOOK_PATH: z.string().startsWith("/").default("/webhooks/scriberr"),
+  SIDECARR_WEBHOOK_CALLBACK_URL: z.string().url().optional(),
+  SIDECARR_WEBHOOK_SECRET: z.string().optional(),
   SIDECARR_DB_PATH: z.string().default("/app/data/sidecar.db")
 });
 
 export type Config = {
+  discoveryMode: "webhook" | "filesystem";
   watchFolder: string;
   scanIntervalMs: number;
   scriberrUrl: string;
@@ -41,12 +48,18 @@ export type Config = {
   summaryTemplate?: string;
   summaryPollIntervalMs: number;
   summaryTimeoutMs: number;
+  webhookHost: string;
+  webhookPort: number;
+  webhookPath: string;
+  webhookCallbackUrl: string;
+  webhookSecret?: string;
   dbPath: string;
 };
 
 export function loadConfig(env: NodeJS.ProcessEnv = process.env): Config {
   const parsed = configSchema.parse(env);
   return {
+    discoveryMode: parsed.SIDECARR_DISCOVERY_MODE,
     watchFolder: parsed.SIDECARR_WATCH_FOLDER,
     scanIntervalMs: parsed.SIDECARR_SCAN_INTERVAL_SECONDS * 1000,
     scriberrUrl: parsed.SIDECARR_SCRIBERR_URL.replace(/\/$/, ""),
@@ -62,6 +75,12 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): Config {
     summaryTemplate: parsed.SIDECARR_SUMMARY_TEMPLATE,
     summaryPollIntervalMs: parsed.SIDECARR_SUMMARY_POLL_INTERVAL_SECONDS * 1000,
     summaryTimeoutMs: parsed.SIDECARR_SUMMARY_TIMEOUT_SECONDS * 1000,
+    webhookHost: parsed.SIDECARR_WEBHOOK_HOST,
+    webhookPort: parsed.SIDECARR_WEBHOOK_PORT,
+    webhookPath: parsed.SIDECARR_WEBHOOK_PATH,
+    webhookCallbackUrl: parsed.SIDECARR_WEBHOOK_CALLBACK_URL
+      ?? `http://scriberr-sidecarr:${parsed.SIDECARR_WEBHOOK_PORT}${parsed.SIDECARR_WEBHOOK_PATH}`,
+    webhookSecret: parsed.SIDECARR_WEBHOOK_SECRET,
     dbPath: parsed.SIDECARR_DB_PATH
   };
 }

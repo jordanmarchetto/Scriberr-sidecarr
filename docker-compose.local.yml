@@ -4,6 +4,8 @@ services:
     restart: unless-stopped
     env_file:
       - .env
+    expose:
+      - "${SIDECARR_WEBHOOK_PORT:-8080}"
     volumes:
       - ${SIDECARR_TRANSCRIPTS_HOST_PATH:-/media/holocron/Storage/Backups/voice_recordings/scriberr_data/app_data/transcripts}:/watch/transcripts:ro
       - ${SIDECARR_DATA_HOST_PATH:-./data}:/app/data

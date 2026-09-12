@@ -19,4 +19,5 @@ RUN mkdir -p /app/data /watch/transcripts && chown -R node:node /app
 USER node
 
 VOLUME ["/app/data"]
+EXPOSE 8080
 ENTRYPOINT ["node", "dist/index.js"]

@@ -54,3 +54,55 @@ export type ScriberrSummaryTemplate = {
   prompt: string;
   include_speaker_info?: boolean;
 };
+
+export type ScriberrSummarySettings = {
+  default_model?: string;
+  auto_summarize?: boolean;
+  default_template_id?: string | null;
+};
+
+export type ScriberrWebhookEvent =
+  | "recording.uploaded"
+  | "transcription.completed"
+  | "transcription.failed"
+  | "summary.completed"
+  | "summary.failed";
+
+export type ScriberrWebhookPayload = {
+  schema_version: "1";
+  event: ScriberrWebhookEvent;
+  job_id: string;
+  title?: string;
+  status: string;
+  audio_path?: string;
+  transcript?: string;
+  summary?: string;
+  error?: string;
+  metadata?: Record<string, unknown>;
+  occurred_at: string;
+};
+
+export type ScriberrWebhook = {
+  id: string;
+  name: string;
+  url: string;
+  events: ScriberrWebhookEvent[];
+  enabled: boolean;
+  has_secret: boolean;
+};
+
+export type ScriberrWebhookInput = {
+  name: string;
+  url: string;
+  events: ScriberrWebhookEvent[];
+  enabled: boolean;
+  secret: string;
+};
+
+export type WebhookSignalRow = {
+  delivery_id: string;
+  job_id: string;
+  event_type: ScriberrWebhookEvent;
+  occurred_at: string;
+  received_at: string;
+};
