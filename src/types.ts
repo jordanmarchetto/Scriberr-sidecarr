@@ -82,6 +82,23 @@ export type ScriberrWebhookPayload = {
   occurred_at: string;
 };
 
+export type ScriberrWebhook = {
+  id: string;
+  name: string;
+  url: string;
+  events: ScriberrWebhookEvent[];
+  enabled: boolean;
+  has_secret: boolean;
+};
+
+export type ScriberrWebhookInput = {
+  name: string;
+  url: string;
+  events: ScriberrWebhookEvent[];
+  enabled: boolean;
+  secret: string;
+};
+
 export type WebhookSignalRow = {
   delivery_id: string;
   job_id: string;

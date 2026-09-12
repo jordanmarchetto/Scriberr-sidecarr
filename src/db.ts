@@ -64,11 +64,28 @@ export class StateStore {
 
       CREATE INDEX IF NOT EXISTS webhook_signals_pending_idx
         ON webhook_signals(processed_at, received_at);
+
+      CREATE TABLE IF NOT EXISTS settings (
+        key TEXT PRIMARY KEY,
+        value TEXT NOT NULL
+      );
     `);
   }
 
   close(): void {
     this.db.close();
+  }
+
+  getSetting(key: string): string | undefined {
+    const row = this.db.prepare("SELECT value FROM settings WHERE key = ?").get(key) as { value: string } | undefined;
+    return row?.value;
+  }
+
+  setSetting(key: string, value: string): void {
+    this.db.prepare(`
+      INSERT INTO settings (key, value) VALUES (?, ?)
+      ON CONFLICT(key) DO UPDATE SET value = excluded.value
+    `).run(key, value);
   }
 
   discover(jobId: string, folder: string, now: string, source = "filesystem"): { inserted: boolean; job: JobRow } {

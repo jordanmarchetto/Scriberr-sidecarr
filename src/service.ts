@@ -13,6 +13,7 @@ export class SidecarService {
   private cycleRunning = false;
   private cycleQueued = false;
   private readonly summaryCheckedAt = new Map<string, number>();
+  private filesystemDiscoveryEnabled = true;
 
   constructor(
     private readonly config: Config,
@@ -21,6 +22,10 @@ export class SidecarService {
     private readonly mqtt: MqttPublisher,
     private readonly logger: pino.Logger
   ) {}
+
+  setFilesystemDiscoveryEnabled(enabled: boolean): void {
+    this.filesystemDiscoveryEnabled = enabled;
+  }
 
   async runCycle(): Promise<void> {
     if (this.cycleRunning) {
@@ -31,7 +36,7 @@ export class SidecarService {
     try {
       do {
         this.cycleQueued = false;
-        await this.scan();
+        if (this.filesystemDiscoveryEnabled) await this.scan();
         const signals = this.db.pendingWebhookSignals();
         const signalsByJob = new Map<string, WebhookSignalRow[]>();
         for (const signal of signals) {

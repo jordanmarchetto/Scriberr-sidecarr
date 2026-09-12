@@ -1,5 +1,14 @@
 import type { Config } from "./config.js";
-import type { ScriberrJob, ScriberrSummary, ScriberrSummarySettings, ScriberrSummaryTemplate } from "./types.js";
+import type {
+  ScriberrJob,
+  ScriberrSummary,
+  ScriberrSummarySettings,
+  ScriberrSummaryTemplate,
+  ScriberrWebhook,
+  ScriberrWebhookInput
+} from "./types.js";
+
+const webhookManagementTimeoutMs = 10_000;
 
 export class ScriberrApiError extends Error {
   constructor(public readonly status: number, message: string) {
@@ -23,6 +32,26 @@ export class ScriberrApi {
 
   async getSummarySettings(): Promise<ScriberrSummarySettings> {
     return this.request<ScriberrSummarySettings>("/api/v1/summaries/settings");
+  }
+
+  async listWebhooks(): Promise<ScriberrWebhook[]> {
+    return this.request<ScriberrWebhook[]>("/api/v1/webhooks/", {}, webhookManagementTimeoutMs);
+  }
+
+  async createWebhook(input: ScriberrWebhookInput): Promise<ScriberrWebhook> {
+    return this.request<ScriberrWebhook>("/api/v1/webhooks/", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(input)
+    }, webhookManagementTimeoutMs);
+  }
+
+  async updateWebhook(id: string, input: ScriberrWebhookInput): Promise<ScriberrWebhook> {
+    return this.request<ScriberrWebhook>(`/api/v1/webhooks/${encodeURIComponent(id)}`, {
+      method: "PUT",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(input)
+    }, webhookManagementTimeoutMs);
   }
 
   async requestSummary(job: ScriberrJob): Promise<void> {
@@ -68,13 +97,13 @@ export class ScriberrApi {
     return this.summaryModel;
   }
 
-  private async request<T>(path: string): Promise<T> {
-    const response = await this.fetch(path);
+  private async request<T>(path: string, init: RequestInit = {}, timeoutMs = this.config.summaryTimeoutMs): Promise<T> {
+    const response = await this.fetch(path, init, timeoutMs);
     if (!response.ok) await this.throwResponse(response);
     return response.json() as Promise<T>;
   }
 
-  private fetch(path: string, init: RequestInit = {}): Promise<Response> {
+  private fetch(path: string, init: RequestInit = {}, timeoutMs = this.config.summaryTimeoutMs): Promise<Response> {
     return fetch(`${this.config.scriberrUrl}${path}`, {
       ...init,
       headers: {
@@ -82,7 +111,7 @@ export class ScriberrApi {
         Accept: "application/json",
         ...(init.headers ?? {})
       },
-      signal: AbortSignal.timeout(this.config.summaryTimeoutMs)
+      signal: init.signal ?? AbortSignal.timeout(timeoutMs)
     });
   }
 
