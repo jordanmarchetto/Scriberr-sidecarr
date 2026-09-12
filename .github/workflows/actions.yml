@@ -1,9 +1,16 @@
-name: Build and publish Docker image
+name: Test and publish Docker image
 
 on:
+  pull_request:
   push:
     branches:
       - main
+    tags:
+      - "v*"
+  workflow_dispatch:
+
+permissions:
+  contents: read
 
 env:
   IMAGE_NAME: jordanmarchetto/scriberr-sidecarr
@@ -21,6 +28,7 @@ jobs:
       - run: npm test
 
   build-and-push:
+    if: github.event_name == 'push'
     needs: test
     runs-on: ubuntu-latest
     steps:
@@ -30,11 +38,18 @@ jobs:
         with:
           username: ${{ secrets.DOCKERHUB_USERNAME }}
           password: ${{ secrets.DOCKERHUB_TOKEN }}
+      - id: metadata
+        uses: docker/metadata-action@v5
+        with:
+          images: ${{ env.IMAGE_NAME }}
+          tags: |
+            type=raw,value=latest,enable={{is_default_branch}}
+            type=semver,pattern={{version}}
+            type=semver,pattern={{major}}.{{minor}}
+            type=sha
       - uses: docker/build-push-action@v6
         with:
           context: .
           push: true
-          tags: |
-            ${{ env.IMAGE_NAME }}:latest
-            ${{ env.IMAGE_NAME }}:${{ github.sha }}
-            ${{ env.IMAGE_NAME }}:${{ github.run_number }}
+          tags: ${{ steps.metadata.outputs.tags }}
+          labels: ${{ steps.metadata.outputs.labels }}

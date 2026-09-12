@@ -64,6 +64,15 @@ test("receiver verifies, validates, and deduplicates Scriberr deliveries", async
     });
     assert.equal(rejected.status, 401);
     assert.equal(db.pendingWebhookSignals().length, 1);
+
+    const metrics = await fetch(`http://127.0.0.1:${receiver.port()}/metrics`);
+    assert.equal(metrics.status, 200);
+    assert.match(metrics.headers.get("content-type") ?? "", /^text\/plain/);
+    const metricsBody = await metrics.text();
+    assert.match(metricsBody, /scriberr_sidecarr_webhook_requests_total\{outcome="accepted"\} 1/);
+    assert.match(metricsBody, /scriberr_sidecarr_webhook_requests_total\{outcome="duplicate"\} 1/);
+    assert.match(metricsBody, /scriberr_sidecarr_webhook_requests_total\{outcome="invalid"\} 1/);
+    assert.match(metricsBody, /scriberr_sidecarr_pending_webhook_signals 1/);
   } finally {
     await receiver.close();
     db.close();

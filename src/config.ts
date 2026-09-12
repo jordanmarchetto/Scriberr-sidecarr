@@ -12,6 +12,9 @@ const configSchema = z.object({
   SIDECARR_SCAN_INTERVAL_SECONDS: z.coerce.number().int().positive().default(30),
   SIDECARR_SCRIBERR_URL: z.string().url(),
   SIDECARR_SCRIBERR_API_KEY: z.string().min(1),
+  SIDECARR_API_TIMEOUT_SECONDS: z.coerce.number().int().positive().default(15),
+  SIDECARR_API_MAX_ATTEMPTS: z.coerce.number().int().min(1).max(5).default(3),
+  SIDECARR_API_RETRY_BASE_MILLISECONDS: z.coerce.number().int().min(0).default(500),
   SIDECARR_MQTT_URL: z.string().min(1),
   SIDECARR_MQTT_USERNAME: z.string().optional(),
   SIDECARR_MQTT_PASSWORD: z.string().optional(),
@@ -37,6 +40,9 @@ export type Config = {
   scanIntervalMs: number;
   scriberrUrl: string;
   scriberrApiKey: string;
+  apiTimeoutMs: number;
+  apiMaxAttempts: number;
+  apiRetryBaseMs: number;
   mqttUrl: string;
   mqttUsername?: string;
   mqttPassword?: string;
@@ -65,6 +71,9 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): Config {
     scriberrUrl: parsed.SIDECARR_SCRIBERR_URL.replace(/\/$/, ""),
     scriberrApiKey: parsed.SIDECARR_SCRIBERR_API_KEY,
     mqttUrl: parsed.SIDECARR_MQTT_URL,
+    apiTimeoutMs: parsed.SIDECARR_API_TIMEOUT_SECONDS * 1000,
+    apiMaxAttempts: parsed.SIDECARR_API_MAX_ATTEMPTS,
+    apiRetryBaseMs: parsed.SIDECARR_API_RETRY_BASE_MILLISECONDS,
     mqttUsername: parsed.SIDECARR_MQTT_USERNAME,
     mqttPassword: parsed.SIDECARR_MQTT_PASSWORD,
     mqttTopicPrefix: parsed.SIDECARR_MQTT_TOPIC_PREFIX.replace(/\/$/, ""),

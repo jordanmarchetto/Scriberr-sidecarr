@@ -1,4 +1,5 @@
 import Database from "better-sqlite3";
+import { sanitizeError } from "./errors.js";
 import type { JobRow, ScriberrWebhookPayload, SidecarState, WebhookSignalRow } from "./types.js";
 
 export type PendingEvent = {
@@ -59,6 +60,7 @@ export class StateStore {
         event_type TEXT NOT NULL,
         occurred_at TEXT NOT NULL,
         received_at TEXT NOT NULL,
+        error_message TEXT,
         processed_at TEXT
       );
 
@@ -70,6 +72,11 @@ export class StateStore {
         value TEXT NOT NULL
       );
     `);
+    const signalColumns = this.db.prepare("PRAGMA table_info(webhook_signals)").all() as Array<{ name: string }>;
+    if (!signalColumns.some((column) => column.name === "error_message")) {
+      this.db.exec("ALTER TABLE webhook_signals ADD COLUMN error_message TEXT");
+    }
+
   }
 
   close(): void {
@@ -109,15 +116,15 @@ export class StateStore {
   recordWebhookSignal(deliveryId: string, payload: ScriberrWebhookPayload, receivedAt: string): boolean {
     const result = this.db.prepare(`
       INSERT OR IGNORE INTO webhook_signals
-        (delivery_id, job_id, event_type, occurred_at, received_at)
-      VALUES (?, ?, ?, ?, ?)
-    `).run(deliveryId, payload.job_id, payload.event, payload.occurred_at, receivedAt);
+        (delivery_id, job_id, event_type, occurred_at, received_at, error_message)
+      VALUES (?, ?, ?, ?, ?, ?)
+    `).run(deliveryId, payload.job_id, payload.event, payload.occurred_at, receivedAt, payload.error ? sanitizeError(payload.error) : null);
     return result.changes === 1;
   }
 
   pendingWebhookSignals(limit = 100): WebhookSignalRow[] {
     return this.db.prepare(`
-      SELECT delivery_id, job_id, event_type, occurred_at, received_at
+      SELECT delivery_id, job_id, event_type, occurred_at, received_at, error_message
       FROM webhook_signals
       WHERE processed_at IS NULL
       ORDER BY received_at
@@ -140,6 +147,25 @@ export class StateStore {
 
   listJobs(): JobRow[] {
     return this.db.prepare("SELECT * FROM jobs ORDER BY first_seen_at").all() as JobRow[];
+  }
+
+  jobStateCounts(): Array<{ sidecar_state: string; count: number }> {
+    return this.db.prepare(`
+      SELECT sidecar_state, COUNT(*) AS count
+      FROM jobs
+      GROUP BY sidecar_state
+      ORDER BY sidecar_state
+    `).all() as Array<{ sidecar_state: string; count: number }>;
+  }
+
+  pendingEventCount(): number {
+    const row = this.db.prepare("SELECT COUNT(*) AS count FROM events WHERE published_at IS NULL").get() as { count: number };
+    return row.count;
+  }
+
+  pendingWebhookSignalCount(): number {
+    const row = this.db.prepare("SELECT COUNT(*) AS count FROM webhook_signals WHERE processed_at IS NULL").get() as { count: number };
+    return row.count;
   }
 
   updateJob(jobId: string, fields: Partial<JobRow>): void {

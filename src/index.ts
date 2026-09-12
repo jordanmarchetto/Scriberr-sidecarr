@@ -2,6 +2,7 @@ import pino from "pino";
 import { loadConfig } from "./config.js";
 import { StateStore } from "./db.js";
 import { MqttPublisher } from "./mqtt-publisher.js";
+import { Metrics } from "./metrics.js";
 import { ScriberrApi } from "./scriberr-api.js";
 import { SidecarService } from "./service.js";
 import { WebhookReceiver } from "./webhook-receiver.js";
@@ -11,13 +12,14 @@ const logger = pino({ level: process.env.LOG_LEVEL ?? "info" });
 
 try {
   const config = loadConfig();
+  const metrics = new Metrics();
   const db = new StateStore(config.dbPath);
-  const api = new ScriberrApi(config);
+  const api = new ScriberrApi(config, metrics);
   const registration = new WebhookRegistration(config, db, api, logger);
   const runtimeConfig = { ...config, webhookSecret: registration.secret };
-  const mqtt = new MqttPublisher(runtimeConfig, db, logger);
-  const service = new SidecarService(runtimeConfig, db, api, mqtt, logger);
-  const receiver = new WebhookReceiver(runtimeConfig, db, () => service.runCycle(), logger);
+  const mqtt = new MqttPublisher(runtimeConfig, db, logger, metrics);
+  const service = new SidecarService(runtimeConfig, db, api, mqtt, logger, metrics);
+  const receiver = new WebhookReceiver(runtimeConfig, db, () => service.runCycle(), logger, metrics);
   let interval: NodeJS.Timeout | undefined;
 
   const runCycle = async () => {

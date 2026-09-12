@@ -3,6 +3,8 @@ import path from "node:path";
 import pino from "pino";
 import type { Config } from "./config.js";
 import { StateStore } from "./db.js";
+import { sanitizeError } from "./errors.js";
+import { Metrics } from "./metrics.js";
 import { MqttPublisher } from "./mqtt-publisher.js";
 import { ScriberrApi, ScriberrApiError } from "./scriberr-api.js";
 import type { JobRow, ScriberrJob, SidecarState, WebhookSignalRow } from "./types.js";
@@ -13,6 +15,7 @@ export class SidecarService {
   private cycleRunning = false;
   private cycleQueued = false;
   private readonly summaryCheckedAt = new Map<string, number>();
+  private readonly activeSummaryRequests = new Set<string>();
   private filesystemDiscoveryEnabled = true;
 
   constructor(
@@ -20,7 +23,8 @@ export class SidecarService {
     private readonly db: StateStore,
     private readonly api: ScriberrApi,
     private readonly mqtt: MqttPublisher,
-    private readonly logger: pino.Logger
+    private readonly logger: pino.Logger,
+    private readonly metrics = new Metrics()
   ) {}
 
   setFilesystemDiscoveryEnabled(enabled: boolean): void {
@@ -47,6 +51,7 @@ export class SidecarService {
           if (result.inserted) {
             this.emit(result.job, "job_found", "discovered", "discovered", null);
             this.logger.info({ jobId: signal.job_id, source: "webhook" }, "job discovered");
+            this.metrics.incrementDiscovered("webhook");
           }
         }
         for (const job of this.db.listJobs()) {
@@ -81,6 +86,7 @@ export class SidecarService {
       if (result.inserted) {
         this.emit(result.job, "job_found", "discovered", "discovered", null);
         this.logger.info({ jobId: entry.name, source: "filesystem" }, "job discovered");
+        this.metrics.incrementDiscovered("filesystem");
       }
     }
   }
@@ -117,7 +123,10 @@ export class SidecarService {
       return true;
     }
     if (job.status === "failed") {
-      this.transition(current, "transcription_failed", "transcription_failed", job.status, job.title);
+      if (!current.last_error) {
+        this.db.updateJob(previous.job_id, { last_error: "Scriberr reported transcription failure" });
+      }
+      this.transition(this.db.getJob(previous.job_id)!, "transcription_failed", "transcription_failed", job.status, job.title);
       return true;
     }
     if (job.status === "completed") {
@@ -126,7 +135,12 @@ export class SidecarService {
         job,
         signals.some((signal) => signal.event_type.startsWith("summary."))
       );
-      if (signals.some((signal) => signal.event_type === "summary.failed")) {
+      await this.mqtt.flush();
+      const summaryFailure = signals.find((signal) => signal.event_type === "summary.failed");
+      if (summaryFailure) {
+        this.db.updateJob(previous.job_id, {
+          last_error: summaryFailure.error_message ?? "Scriberr reported summary failure"
+        });
         current = this.db.getJob(previous.job_id)!;
         this.transition(current, "summary_failed", "summary_failed", job.status, job.title);
       }
@@ -166,6 +180,8 @@ export class SidecarService {
       current = this.db.getJob(row.job_id)!;
     }
     if (now >= deadline) {
+      this.db.updateJob(row.job_id, { last_error: "Summary generation timed out" });
+      current = this.db.getJob(row.job_id)!;
       this.transition(current, "summary_failed", "summary_failed", job.status, job.title);
       return;
     }
@@ -188,18 +204,35 @@ export class SidecarService {
       return;
     }
 
-    try {
-      this.db.updateJob(row.job_id, { summary_requested_at: new Date().toISOString(), summary_started_at: new Date().toISOString() });
-      current = this.db.getJob(row.job_id)!;
-      this.transition(current, "summary_processing", "summary_processing", job.status, job.title);
-      await this.api.requestSummary(job);
-    } catch (error) {
-      this.db.updateJob(row.job_id, { summary_requested_at: null, last_error: this.safeError(error) });
-      const failed = this.db.getJob(row.job_id)!;
-      this.db.updateJob(row.job_id, { sidecar_state: "summary_failed" });
-      this.emit(this.db.getJob(row.job_id)!, "summary_failed", "summary_failed", job.status, job.title);
-      this.logger.warn({ jobId: job.id, error: this.safeError(error) }, "summary request failed");
-    }
+    this.startSummaryRequest(current, job);
+  }
+
+
+  private startSummaryRequest(row: JobRow, job: ScriberrJob): void {
+    if (this.activeSummaryRequests.has(job.id)) return;
+
+    const startedAt = new Date().toISOString();
+    this.db.updateJob(row.job_id, { summary_requested_at: startedAt, summary_started_at: startedAt });
+    this.transition(this.db.getJob(row.job_id)!, "summary_processing", "summary_processing", job.status, job.title);
+    this.activeSummaryRequests.add(job.id);
+
+    void this.api.requestSummary(job)
+      .then(() => {
+        void this.runCycle().catch((error: unknown) => {
+          this.logger.error({ jobId: job.id, error: this.safeError(error) }, "post-summary cycle failed");
+        });
+      })
+      .catch(async (error: unknown) => {
+        const message = this.safeError(error);
+        this.db.updateJob(row.job_id, { summary_requested_at: null, last_error: message });
+        const failed = this.db.getJob(row.job_id)!;
+        this.transition(failed, "summary_failed", "summary_failed", job.status, job.title);
+        this.logger.warn({ jobId: job.id, error: message }, "summary request failed");
+        await this.mqtt.flush();
+      })
+      .finally(() => {
+        this.activeSummaryRequests.delete(job.id);
+      });
   }
 
   private transition(row: JobRow, state: SidecarState, eventType: string, status: string, title?: string | null): void {
@@ -212,6 +245,15 @@ export class SidecarService {
   }
 
   private emit(row: JobRow, eventType: string, _state: SidecarState, status: string, title?: string | null): void {
+    const completedAt = Date.now();
+    if (eventType === "transcription_complete") {
+      this.metrics.observeDuration("transcription", (completedAt - Date.parse(row.first_seen_at)) / 1000);
+    }
+    if (eventType === "summary_complete") {
+      const startedAt = row.summary_started_at ?? row.transcription_event_at;
+      if (startedAt) this.metrics.observeDuration("summary", (completedAt - Date.parse(startedAt)) / 1000);
+    }
+
     this.db.ensureEvent(row, eventType, {
       event: eventType,
       job_id: row.job_id,
@@ -220,12 +262,12 @@ export class SidecarService {
       source: row.source,
       attempt: row.attempt,
       occurred_at: new Date().toISOString(),
-      scriberr_url: this.config.scriberrUrl
+      scriberr_url: this.config.scriberrUrl,
+      ...(eventType.endsWith("_failed") && row.last_error ? { error: this.safeError(row.last_error) } : {})
     });
   }
 
   private safeError(error: unknown): string {
-    if (error instanceof ScriberrApiError) return error.message;
-    return error instanceof Error ? error.message : String(error);
+    return sanitizeError(error instanceof ScriberrApiError ? error.message : error);
   }
 }
