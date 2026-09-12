@@ -8,6 +8,8 @@ Copy .env.sample to .env and set the Scriberr API key and MQTT values. All appli
 
 The API key must be sent to Scriberr as X-API-Key. The sidecar never places the key, transcript, or summary content in MQTT messages or logs.
 
+
+When both SIDECARR_AUTOGENERATE_SUMMARY and Scriberr's auto-summarize feature are enabled, Scriberr owns summary generation. The sidecar waits for Scriberr's summary webhook (with API polling as fallback) instead of starting a duplicate request. If the sidecar cannot read Scriberr's summary settings, it safely defers its own request and checks again on the next cycle.
 When SIDECARR_AUTOGENERATE_SUMMARY=true, SIDECARR_SUMMARY_TEMPLATE selects a Scriberr summary template by name (default: Default). The template supplies the prompt and model; set SIDECARR_SUMMARY_MODEL to override the template's model.
 
 ## Run with the published image

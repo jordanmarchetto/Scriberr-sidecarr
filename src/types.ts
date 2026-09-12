@@ -55,6 +55,12 @@ export type ScriberrSummaryTemplate = {
   include_speaker_info?: boolean;
 };
 
+export type ScriberrSummarySettings = {
+  default_model?: string;
+  auto_summarize?: boolean;
+  default_template_id?: string | null;
+};
+
 export type ScriberrWebhookEvent =
   | "recording.uploaded"
   | "transcription.completed"

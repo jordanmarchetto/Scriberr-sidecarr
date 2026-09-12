@@ -170,6 +170,20 @@ export class SidecarService {
     if (!this.config.autogenerateSummary || current.summary_requested_at) return;
 
     try {
+      const settings = await this.api.getSummarySettings();
+      if (settings.auto_summarize) {
+        this.logger.debug({ jobId: job.id }, "waiting for Scriberr automatic summary");
+        return;
+      }
+    } catch (error) {
+      this.logger.warn(
+        { jobId: job.id, error: this.safeError(error) },
+        "Scriberr auto-summary settings lookup failed; deferring sidecar summary request"
+      );
+      return;
+    }
+
+    try {
       this.db.updateJob(row.job_id, { summary_requested_at: new Date().toISOString(), summary_started_at: new Date().toISOString() });
       current = this.db.getJob(row.job_id)!;
       this.transition(current, "summary_processing", "summary_processing", job.status, job.title);
