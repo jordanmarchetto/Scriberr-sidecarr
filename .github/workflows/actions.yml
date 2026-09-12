@@ -5,6 +5,7 @@ on:
   push:
     branches:
       - main
+      - "feature/**"
     tags:
       - "v*"
   workflow_dispatch:
@@ -44,6 +45,7 @@ jobs:
           images: ${{ env.IMAGE_NAME }}
           tags: |
             type=raw,value=latest,enable={{is_default_branch}}
+            type=ref,event=branch,enable=${{ startsWith(github.ref, 'refs/heads/feature/') }}
             type=semver,pattern={{version}}
             type=semver,pattern={{major}}.{{minor}}
             type=sha

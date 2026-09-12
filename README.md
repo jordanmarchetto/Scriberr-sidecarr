@@ -19,7 +19,7 @@ With an unmodified Scriberr installation:
 4. If configured, it asks Scriberr to generate missing summaries.
 5. It publishes the same MQTT lifecycle events.
 
-In both cases, SQLite prevents duplicate events and preserves pending MQTT messages across restarts. Sidecarr does not transcribe recordings or generate summaries itself; Scriberr does that work.
+In both cases, SQLite prevents duplicate events and preserves pending MQTT messages across restarts. Sidecarr does not transcribe recordings or generate summaries itself; Scriberr does that work. Optionally, it can also maintain editable Notion pages containing each recording, transcript, and summary.
 
 ## Quick start
 
@@ -85,6 +85,27 @@ When both SIDECARR_AUTOGENERATE_SUMMARY and Scriberr's auto-summarize feature ar
 
 When SIDECARR_AUTOGENERATE_SUMMARY=true, SIDECARR_SUMMARY_TEMPLATE selects a Scriberr template by name (default: Default). Set SIDECARR_SUMMARY_MODEL to override the template's model.
 
+## Optional Notion destination
+
+Notion is disabled by default. To enable it:
+
+1. Create a Notion internal integration with permission to read, insert, and update content.
+2. Create a normal Notion page—not a database—to hold the Scriberr notes.
+3. Share that page with the integration.
+4. Add these settings to `.env`:
+
+       SIDECARR_NOTEBOOK_PROVIDER=notion
+       SIDECARR_NOTION_TOKEN=secret_your_integration_token
+       SIDECARR_NOTION_PARENT_PAGE_URL=https://www.notion.so/your-parent-page-id
+
+The token and parent URL are both required when the provider is enabled. Sidecarr creates one child page per Scriberr job and progressively adds status, metadata, editable classification fields, audio, a user-owned Notes area, summary, full transcript, and archived rerun attempts. It only replaces blocks it owns, so content added to Notes or elsewhere is preserved.
+
+Sidecarr downloads audio through Scriberr's authenticated API; it does not need an uploads-directory mount. Notion simple uploads are limited to 20 MiB. When a recording exceeds that limit or Notion rejects its media format, the page explains why and links back to the recording in Scriberr. Transcript and summary synchronization continue normally.
+
+Existing tracked jobs are not imported when Notion is first enabled. Set `SIDECARR_NOTION_BACKFILL=true` to opt into backfill. If the configured parent URL later changes, Sidecarr moves only pages it previously created or recovered by their Sidecarr job marker.
+
+Notion failures are retried up to three times and emit `notebook_sync_failed`; they do not stop Scriberr polling, webhook handling, summary coordination, or core MQTT events. Docker logs contain job IDs, operations, and sanitized errors, but never the Notion token, audio, transcript, or summary content.
+
 ## Build locally
 
 Use docker-compose.local.yml to build from the checked-out source:
@@ -97,6 +118,12 @@ Pushes to main publish `latest` and commit-SHA image tags. A semantic-version Gi
 
     jordanmarchetto/scriberr-sidecarr:0.2.0
     jordanmarchetto/scriberr-sidecarr:0.2
+
+Pushes to a `feature/**` branch also publish a temporary branch tag for testing. Docker tag rules replace the slash with a dash, so `feature/notion-notebook-destination` publishes:
+
+    jordanmarchetto/scriberr-sidecarr:feature-notion-notebook-destination
+
+Set that tag in `docker-compose.yml`, then run `docker compose pull && docker compose up -d` to test the branch image.
 
 Use the full version tag in production so upgrades are explicit. Create and push the Git tag only after the corresponding commit has passed CI.
 
@@ -129,3 +156,16 @@ The default `LOG_LEVEL=info` records startup configuration, discovery-mode chang
 ## Events
 
 Events are published at SIDECARR_MQTT_TOPIC_PREFIX/{job_id}/{event_name} with QoS and retention controlled by configuration. For example: home/audio/scriberr/123e4567-e89b-12d3-a456-426614174000/summary_complete. Subscribe to SIDECARR_MQTT_TOPIC_PREFIX/+/# to receive all job events or SIDECARR_MQTT_TOPIC_PREFIX/{job_id}/# to follow one job. Messages contain job metadata only, including Scriberr's title when available. Failure events include a bounded, redacted error message. Transcription and summary lifecycle events are tracked independently, and a Scriberr rerun creates a new attempt so later success events are not suppressed by an earlier failure.
+
+When Notion is enabled, meaningful notebook steps use the same topic shape and publish metadata-only events:
+
+- `notebook_page_created`
+- `notebook_page_moved`
+- `notebook_status_updated`
+- `notebook_audio_attached` or `notebook_audio_skipped`
+- `notebook_version_archived`
+- `notebook_transcript_updated`
+- `notebook_summary_updated`
+- `notebook_sync_failed`
+
+These payloads contain the provider, job and attempt IDs, operation, Notion page ID/URL, timestamp, and a sanitized error when relevant. They never contain note content, transcripts, summaries, audio, or credentials.

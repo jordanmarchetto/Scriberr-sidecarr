@@ -6,6 +6,7 @@ import { StateStore } from "./db.js";
 import { sanitizeError } from "./errors.js";
 import { Metrics } from "./metrics.js";
 import { MqttPublisher } from "./mqtt-publisher.js";
+import { NotebookService } from "./notebook-service.js";
 import { ScriberrApi, ScriberrApiError } from "./scriberr-api.js";
 import type { JobRow, ScriberrJob, SidecarState, WebhookSignalRow } from "./types.js";
 
@@ -24,7 +25,8 @@ export class SidecarService {
     private readonly api: ScriberrApi,
     private readonly mqtt: MqttPublisher,
     private readonly logger: pino.Logger,
-    private readonly metrics = new Metrics()
+    private readonly metrics = new Metrics(),
+    private readonly notebook?: NotebookService
   ) {}
 
   setFilesystemDiscoveryEnabled(enabled: boolean): void {
@@ -122,10 +124,12 @@ export class SidecarService {
 
     if (job.status === "uploaded" || job.status === "pending") {
       this.transition(current, "pending_transcription", "pending_transcription", job.status, job.title);
+      await this.syncNotebook(job);
       return true;
     }
     if (job.status === "processing") {
       this.transition(current, "processing_transcription", "transcription_processing", job.status, job.title);
+      await this.syncNotebook(job);
       return true;
     }
     if (job.status === "failed") {
@@ -133,6 +137,7 @@ export class SidecarService {
         this.db.updateJob(previous.job_id, { last_error: "Scriberr reported transcription failure" });
       }
       this.transition(this.db.getJob(previous.job_id)!, "transcription_failed", "transcription_failed", job.status, job.title);
+      await this.syncNotebook(job);
       return true;
     }
     if (job.status === "completed") {
@@ -150,6 +155,7 @@ export class SidecarService {
         current = this.db.getJob(previous.job_id)!;
         this.transition(current, "summary_failed", "summary_failed", job.status, job.title);
       }
+      await this.syncNotebook(job);
     }
     return true;
   }
@@ -291,5 +297,13 @@ export class SidecarService {
 
   private safeError(error: unknown): string {
     return sanitizeError(error instanceof ScriberrApiError ? error.message : error);
+  }
+
+  private async syncNotebook(job: ScriberrJob): Promise<void> {
+    if (!this.notebook) return;
+    // Core MQTT events should not wait for a slower notebook API.
+    await this.mqtt.flush();
+    const current = this.db.getJob(job.id);
+    if (current) await this.notebook.sync(job, current);
   }
 }

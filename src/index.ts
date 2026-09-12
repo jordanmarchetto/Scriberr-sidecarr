@@ -3,6 +3,8 @@ import { loadConfig } from "./config.js";
 import { StateStore } from "./db.js";
 import { MqttPublisher } from "./mqtt-publisher.js";
 import { Metrics } from "./metrics.js";
+import { NotebookService } from "./notebook-service.js";
+import { NotionPublisher } from "./notion-publisher.js";
 import { ScriberrApi } from "./scriberr-api.js";
 import { SidecarService } from "./service.js";
 import { WebhookReceiver } from "./webhook-receiver.js";
@@ -33,7 +35,8 @@ try {
     webhookCallbackUrl: safeEndpoint(config.webhookCallbackUrl),
     webhookListen: `${config.webhookHost}:${config.webhookPort}${config.webhookPath}`,
     autogenerateSummary: config.autogenerateSummary,
-    summaryTemplate: config.summaryTemplate
+    summaryTemplate: config.summaryTemplate,
+    notebookProvider: config.notebookProvider ?? "disabled"
   }, "configuration loaded");
   const metrics = new Metrics();
   const db = new StateStore(config.dbPath);
@@ -42,7 +45,14 @@ try {
   const registration = new WebhookRegistration(config, db, api, logger);
   const runtimeConfig = { ...config, webhookSecret: registration.secret };
   const mqtt = new MqttPublisher(runtimeConfig, db, logger, metrics);
-  const service = new SidecarService(runtimeConfig, db, api, mqtt, logger, metrics);
+  const notion = runtimeConfig.notebookProvider === "notion"
+    ? new NotionPublisher(runtimeConfig, db, api, logger)
+    : undefined;
+  if (notion) {
+    logger.info({ provider: notion.provider, parentPageId: notion.parentPageId }, "notebook destination enabled");
+  }
+  const notebook = notion ? new NotebookService(runtimeConfig, db, notion, logger) : undefined;
+  const service = new SidecarService(runtimeConfig, db, api, mqtt, logger, metrics, notebook);
   const receiver = new WebhookReceiver(runtimeConfig, db, () => service.runCycle(), logger, metrics);
   let interval: NodeJS.Timeout | undefined;
 
