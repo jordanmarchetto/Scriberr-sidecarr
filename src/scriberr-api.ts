@@ -1,7 +1,16 @@
 import type { Config } from "./config.js";
 import { sanitizeError } from "./errors.js";
 import { Metrics } from "./metrics.js";
-import type { ScriberrJob, ScriberrSummary, ScriberrSummarySettings, ScriberrSummaryTemplate } from "./types.js";
+import type {
+  ScriberrJob,
+  ScriberrSummary,
+  ScriberrSummarySettings,
+  ScriberrSummaryTemplate,
+  ScriberrWebhook,
+  ScriberrWebhookInput
+} from "./types.js";
+
+const webhookManagementTimeoutMs = 10_000;
 
 export class ScriberrApiError extends Error {
   constructor(public readonly status: number, message: string) {
@@ -25,6 +34,26 @@ export class ScriberrApi {
 
   async getSummarySettings(): Promise<ScriberrSummarySettings> {
     return this.request<ScriberrSummarySettings>("/api/v1/summaries/settings");
+  }
+
+  async listWebhooks(): Promise<ScriberrWebhook[]> {
+    return this.request<ScriberrWebhook[]>("/api/v1/webhooks/", {}, webhookManagementTimeoutMs);
+  }
+
+  async createWebhook(input: ScriberrWebhookInput): Promise<ScriberrWebhook> {
+    return this.requestOnce<ScriberrWebhook>("/api/v1/webhooks/", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(input)
+    }, webhookManagementTimeoutMs);
+  }
+
+  async updateWebhook(id: string, input: ScriberrWebhookInput): Promise<ScriberrWebhook> {
+    return this.requestOnce<ScriberrWebhook>(`/api/v1/webhooks/${encodeURIComponent(id)}`, {
+      method: "PUT",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(input)
+    }, webhookManagementTimeoutMs);
   }
 
   async requestSummary(job: ScriberrJob): Promise<void> {
@@ -84,11 +113,15 @@ export class ScriberrApi {
     return this.summaryModel;
   }
 
-  private async request<T>(path: string): Promise<T> {
+  private async request<T>(
+    path: string,
+    init: RequestInit = {},
+    timeoutMs = this.config.apiTimeoutMs
+  ): Promise<T> {
     let lastError: unknown;
     for (let attempt = 1; attempt <= this.config.apiMaxAttempts; attempt += 1) {
       try {
-        const response = await this.fetch(path);
+        const response = await this.fetch(path, init, timeoutMs);
         if (response.ok) return await response.json() as T;
 
         const retryable = response.status === 408 || response.status === 429 || response.status >= 500;
@@ -115,6 +148,20 @@ export class ScriberrApi {
     throw lastError instanceof Error ? lastError : new Error("Scriberr API request failed");
   }
 
+  private async requestOnce<T>(path: string, init: RequestInit, timeoutMs: number): Promise<T> {
+    try {
+      const response = await this.fetch(path, init, timeoutMs);
+      if (!response.ok) {
+        this.metrics.incrementApiFailure();
+        await this.throwResponse(response);
+      }
+      return await response.json() as T;
+    } catch (error) {
+      if (!(error instanceof ScriberrApiError)) this.metrics.incrementApiFailure();
+      throw error;
+    }
+  }
+
   private fetch(path: string, init: RequestInit = {}, timeoutMs = this.config.apiTimeoutMs): Promise<Response> {
     return fetch(`${this.config.scriberrUrl}${path}`, {
       ...init,
@@ -123,7 +170,7 @@ export class ScriberrApi {
         Accept: "application/json",
         ...(init.headers ?? {})
       },
-      signal: AbortSignal.timeout(timeoutMs)
+      signal: init.signal ?? AbortSignal.timeout(timeoutMs)
     });
   }
 

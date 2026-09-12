@@ -16,6 +16,7 @@ export class SidecarService {
   private cycleQueued = false;
   private readonly summaryCheckedAt = new Map<string, number>();
   private readonly activeSummaryRequests = new Set<string>();
+  private filesystemDiscoveryEnabled = true;
 
   constructor(
     private readonly config: Config,
@@ -26,6 +27,10 @@ export class SidecarService {
     private readonly metrics = new Metrics()
   ) {}
 
+  setFilesystemDiscoveryEnabled(enabled: boolean): void {
+    this.filesystemDiscoveryEnabled = enabled;
+  }
+
   async runCycle(): Promise<void> {
     if (this.cycleRunning) {
       this.cycleQueued = true;
@@ -35,7 +40,7 @@ export class SidecarService {
     try {
       do {
         this.cycleQueued = false;
-        await this.scan();
+        if (this.filesystemDiscoveryEnabled) await this.scan();
         const signals = this.db.pendingWebhookSignals();
         const signalsByJob = new Map<string, WebhookSignalRow[]>();
         for (const signal of signals) {

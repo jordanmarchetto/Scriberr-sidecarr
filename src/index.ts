@@ -6,6 +6,7 @@ import { Metrics } from "./metrics.js";
 import { ScriberrApi } from "./scriberr-api.js";
 import { SidecarService } from "./service.js";
 import { WebhookReceiver } from "./webhook-receiver.js";
+import { WebhookRegistration } from "./webhook-registration.js";
 
 const logger = pino({ level: process.env.LOG_LEVEL ?? "info" });
 
@@ -14,10 +15,18 @@ try {
   const metrics = new Metrics();
   const db = new StateStore(config.dbPath);
   const api = new ScriberrApi(config, metrics);
-  const mqtt = new MqttPublisher(config, db, logger, metrics);
-  const service = new SidecarService(config, db, api, mqtt, logger, metrics);
-  const receiver = new WebhookReceiver(config, db, () => service.runCycle(), logger, metrics);
+  const registration = new WebhookRegistration(config, db, api, logger);
+  const runtimeConfig = { ...config, webhookSecret: registration.secret };
+  const mqtt = new MqttPublisher(runtimeConfig, db, logger, metrics);
+  const service = new SidecarService(runtimeConfig, db, api, mqtt, logger, metrics);
+  const receiver = new WebhookReceiver(runtimeConfig, db, () => service.runCycle(), logger, metrics);
   let interval: NodeJS.Timeout | undefined;
+
+  const runCycle = async () => {
+    const webhookActive = await registration.reconcile();
+    service.setFilesystemDiscoveryEnabled(!webhookActive);
+    await service.runCycle();
+  };
 
   let shuttingDown = false;
   const shutdown = async () => {
@@ -34,12 +43,12 @@ try {
   process.once("SIGINT", () => void shutdown());
 
   await receiver.listen();
-  await service.runCycle();
+  await runCycle();
   interval = setInterval(
-    () => service.runCycle().catch((error) => logger.error({ error }, "cycle failed")),
+    () => runCycle().catch((error) => logger.error({ error }, "cycle failed")),
     config.scanIntervalMs
   );
-  logger.info({ intervalSeconds: config.scanIntervalMs / 1000 }, "scriberr sidecarr started");
+  logger.info({ discoveryMode: config.discoveryMode, intervalSeconds: config.scanIntervalMs / 1000 }, "scriberr sidecarr started");
 } catch (error) {
   logger.fatal({ error }, "scriberr sidecarr failed to start");
   process.exit(1);
