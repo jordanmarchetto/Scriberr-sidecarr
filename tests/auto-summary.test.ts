@@ -23,7 +23,12 @@ const job: ScriberrJob = {
 class FakeScriberrApi extends ScriberrApi {
   summaryRequests = 0;
 
-  constructor(config: Config, private readonly settings: ScriberrSummarySettings | Error) {
+  constructor(
+    config: Config,
+    private readonly settings: ScriberrSummarySettings | Error,
+    private readonly summaryRequest: () => Promise<void> = async () => undefined,
+    private readonly summaryContent: string | null = null
+  ) {
     super(config);
   }
 
@@ -31,8 +36,8 @@ class FakeScriberrApi extends ScriberrApi {
     return job;
   }
 
-  override async getSummary(): Promise<{ content: null }> {
-    return { content: null };
+  override async getSummary(): Promise<{ content: string | null }> {
+    return { content: this.summaryContent };
   }
 
   override async getSummarySettings(): Promise<ScriberrSummarySettings> {
@@ -42,6 +47,7 @@ class FakeScriberrApi extends ScriberrApi {
 
   override async requestSummary(): Promise<void> {
     this.summaryRequests += 1;
+    await this.summaryRequest();
   }
 }
 
@@ -52,18 +58,23 @@ type Scenario = {
   service: SidecarService;
 };
 
-function scenario(settings: ScriberrSummarySettings | Error): Scenario {
+function scenario(
+  settings: ScriberrSummarySettings | Error,
+  summaryRequest?: () => Promise<void>,
+  summaryContent?: string
+): Scenario {
   const directory = mkdtempSync(path.join(tmpdir(), "scriberr-sidecarr-auto-summary-"));
   const config = loadConfig({
     SIDECARR_WATCH_FOLDER: directory,
     SIDECARR_SCRIBERR_URL: "http://scriberr",
     SIDECARR_SCRIBERR_API_KEY: "api-key",
     SIDECARR_MQTT_URL: "mqtt://mqtt",
-    SIDECARR_AUTOGENERATE_SUMMARY: "true"
+    SIDECARR_AUTOGENERATE_SUMMARY: "true",
+    SIDECARR_SUMMARY_POLL_INTERVAL_SECONDS: "1",
   });
   const db = new StateStore(path.join(directory, "state.db"));
   db.discover(jobId, "", new Date().toISOString(), "webhook");
-  const api = new FakeScriberrApi(config, settings);
+  const api = new FakeScriberrApi(config, settings, summaryRequest, summaryContent);
   const mqtt = { flush: async () => undefined } as unknown as MqttPublisher;
   const service = new SidecarService(config, db, api, mqtt, pino({ level: "silent" }));
   return { api, db, directory, service };
@@ -105,6 +116,58 @@ test("defers sidecar generation when summary ownership cannot be checked", async
 
     assert.equal(value.api.summaryRequests, 0);
     assert.equal(value.db.getJob(jobId)?.sidecar_state, "summary_pending");
+  } finally {
+    cleanup(value);
+  }
+});
+
+test("discovers a completed summary through API polling without a webhook", async () => {
+  const value = scenario(
+    { auto_summarize: true, default_template_id: "template-1" },
+    undefined,
+    "Summary discovered by polling"
+  );
+  try {
+    await value.service.runCycle();
+
+    assert.equal(value.db.getJob(jobId)?.sidecar_state, "summary_complete");
+    assert.ok(value.db.pendingEvents().some((event) => event.event_type === "summary_complete"));
+  } finally {
+    cleanup(value);
+  }
+});
+
+test("does not hold the polling cycle open for a slow summary request", async () => {
+  const neverFinishes = new Promise<void>(() => undefined);
+  const value = scenario({ auto_summarize: false }, () => neverFinishes);
+  try {
+    const completedPromptly = await Promise.race([
+      value.service.runCycle().then(() => true),
+      new Promise<boolean>((resolve) => setTimeout(() => resolve(false), 100))
+    ]);
+
+    assert.equal(completedPromptly, true);
+    assert.equal(value.api.summaryRequests, 1);
+    assert.equal(value.db.getJob(jobId)?.sidecar_state, "summary_processing");
+  } finally {
+    cleanup(value);
+  }
+});
+
+test("records a sanitized failure when background summary generation fails", async () => {
+  const value = scenario(
+    { auto_summarize: false },
+    async () => { throw new Error("token=super-secret summary provider failed\nwith details"); }
+  );
+  try {
+    await value.service.runCycle();
+    await new Promise<void>((resolve) => setImmediate(resolve));
+
+    assert.equal(value.db.getJob(jobId)?.sidecar_state, "summary_failed");
+    const failed = value.db.pendingEvents().find((event) => event.event_type === "summary_failed");
+    assert.ok(failed);
+    const payload = JSON.parse(failed.payload_json) as { error?: string };
+    assert.equal(payload.error, "token=[REDACTED] summary provider failed with details");
   } finally {
     cleanup(value);
   }

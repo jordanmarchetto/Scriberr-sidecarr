@@ -88,4 +88,5 @@ export type WebhookSignalRow = {
   event_type: ScriberrWebhookEvent;
   occurred_at: string;
   received_at: string;
+  error_message: string | null;
 };

@@ -5,6 +5,8 @@ import pino from "pino";
 import { z } from "zod";
 import type { Config } from "./config.js";
 import { StateStore } from "./db.js";
+import { sanitizeError } from "./errors.js";
+import { Metrics } from "./metrics.js";
 import type { ScriberrWebhookPayload } from "./types.js";
 
 const maxBodyBytes = 1024 * 1024;
@@ -42,7 +44,8 @@ export class WebhookReceiver {
     private readonly config: Config,
     private readonly db: StateStore,
     private readonly onSignal: () => void | Promise<void>,
-    private readonly logger: pino.Logger
+    private readonly logger: pino.Logger,
+    private readonly metrics = new Metrics()
   ) {
     this.server = createServer((request, response) => {
       void this.handle(request, response);
@@ -85,6 +88,10 @@ export class WebhookReceiver {
         this.respond(response, 200, { status: "ok" });
         return;
       }
+      if (request.method === "GET" && url.pathname === "/metrics") {
+        this.respondText(response, 200, this.metrics.render(this.db));
+        return;
+      }
       if (url.pathname !== this.config.webhookPath) {
         this.respond(response, 404, { error: "not found" });
         return;
@@ -118,10 +125,11 @@ export class WebhookReceiver {
       const payload: ScriberrWebhookPayload = parsed.data;
       const inserted = this.db.recordWebhookSignal(deliveryId, payload, new Date().toISOString());
       this.respond(response, 202, { accepted: true, duplicate: !inserted });
+      this.metrics.incrementWebhook(inserted ? "accepted" : "duplicate");
 
       if (inserted) {
         void Promise.resolve().then(() => this.onSignal()).catch((error: unknown) => {
-          const message = error instanceof Error ? error.message : String(error);
+          const message = sanitizeError(error);
           this.logger.error({ jobId: payload.job_id, event: payload.event, error: message }, "webhook processing failed");
         });
       }
@@ -130,6 +138,7 @@ export class WebhookReceiver {
       const message = error instanceof HttpError ? error.message : "internal server error";
       if (status === 500) this.logger.error({ error }, "webhook request failed");
       this.respond(response, status, { error: message });
+      this.metrics.incrementWebhook(status === 500 ? "error" : "invalid");
     }
   }
 
@@ -164,5 +173,11 @@ export class WebhookReceiver {
     if (response.headersSent) return;
     response.writeHead(status, { "Content-Type": "application/json" });
     response.end(JSON.stringify(body));
+  }
+
+  private respondText(response: ServerResponse, status: number, body: string): void {
+    if (response.headersSent) return;
+    response.writeHead(status, { "Content-Type": "text/plain; version=0.0.4; charset=utf-8" });
+    response.end(body);
   }
 }

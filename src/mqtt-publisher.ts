@@ -1,14 +1,21 @@
 import mqtt, { type MqttClient } from "mqtt";
 import type { Config } from "./config.js";
+import { sanitizeError } from "./errors.js";
 import { StateStore } from "./db.js";
 import type { PendingEvent } from "./db.js";
 import pino from "pino";
+import { Metrics } from "./metrics.js";
 
 export class MqttPublisher {
   private readonly client: MqttClient;
   private connected = false;
 
-  constructor(private readonly config: Config, private readonly db: StateStore, private readonly logger: pino.Logger) {
+  constructor(
+    private readonly config: Config,
+    private readonly db: StateStore,
+    private readonly logger: pino.Logger,
+    private readonly metrics = new Metrics()
+  ) {
     this.client = mqtt.connect(config.mqttUrl, {
       username: config.mqttUsername,
       password: config.mqttPassword,
@@ -33,7 +40,8 @@ export class MqttPublisher {
         await this.publish(event);
         this.db.markPublished(event.id, new Date().toISOString());
       } catch (error) {
-        const message = error instanceof Error ? error.message : String(error);
+        this.metrics.incrementMqttFailure();
+        const message = sanitizeError(error);
         this.db.recordPublishAttempt(event.id, message);
         this.logger.warn({ eventId: event.id, eventType: event.event_type, error: message }, "mqtt publish failed");
         break;
