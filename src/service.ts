@@ -343,6 +343,7 @@ export class SidecarService {
   }
 
   private pollPriority(job: JobRow): number {
+    if (this.notebook?.needsReconciliation(job.job_id)) return -1;
     if (["pending_transcription", "processing_transcription", "summary_pending", "summary_processing"].includes(job.sidecar_state)) return 0;
     if (job.sidecar_state === "discovered" && !job.last_error) return 1;
     if (terminalStates.has(job.sidecar_state)) return 3;

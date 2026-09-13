@@ -44,7 +44,7 @@ type PageShell = {
 
 export class NotionPublisher implements NotebookPublisher {
   readonly provider = "notion";
-  readonly reconciliationKey = "layout:v2";
+  readonly reconciliationKey = "layout:v3";
   readonly parentPageId: string;
 
   constructor(
@@ -279,7 +279,6 @@ export class NotionPublisher implements NotebookPublisher {
 
     const transcript = await this.notion.createPage(pageId, "Full Transcript");
     const transcriptBlocks = await this.notion.appendChildren(transcript.id, [
-      paragraph(`Sidecarr Transcript for Job ID: ${job.id}`),
       paragraph("Transcription loading…")
     ]);
     const versions = required((await this.notion.appendChildren(pageId, [toggle("Previous Versions")]))[0], "versions container");
@@ -299,7 +298,7 @@ export class NotionPublisher implements NotebookPublisher {
       summaryContainerId: summary.id,
       summaryBlockIds: summaryChildren.map((item) => item.id),
       transcriptPageId: transcript.id,
-      transcriptBlockIds: transcriptBlocks.slice(1).map((item) => item.id),
+      transcriptBlockIds: transcriptBlocks.map((item) => item.id),
       versionsContainerId: versions.id
     };
     const page: NotebookPageRow = {
@@ -349,7 +348,7 @@ export class NotionPublisher implements NotebookPublisher {
     for (const child of children) {
       if (child.type !== "child_page") continue;
       const blocks = await this.notion.children(child.id);
-      if (!blocks.some((block) => blockText(block) === `Sidecarr Job ID: ${jobId}`)) continue;
+      if (!await this.hasJobMarker(blocks, jobId)) continue;
       const page = await this.notion.retrievePage(child.id);
       if (page.in_trash === true || page.archived === true) throw new Error("Mapped Notion appointment page is deleted or trashed");
       const shell = await this.recoverShell(child.id, blocks, jobId);
@@ -421,9 +420,7 @@ export class NotionPublisher implements NotebookPublisher {
     const skippedAudio = audioChildren.find((item) => /20 MiB|rejected|Open the recording in Scriberr/i.test(blockText(item)));
     const summaryChildren = await this.notion.children(summary.id);
     const transcriptChildren = await this.notion.children(transcript.id);
-    if (rows.length < 4 || !transcriptChildren.some((item) => blockText(item).includes(jobId))) {
-      throw new Error(`Notion appointment ${pageId} has an invalid Sidecarr marker`);
-    }
+    if (rows.length < 4) throw new Error(`Notion appointment ${pageId} has invalid classification rows`);
     return {
       currentAttempt: Number.isInteger(parsedAttempt) && parsedAttempt > 0 ? parsedAttempt : 1,
       statusBlockId: status.id,
@@ -439,7 +436,7 @@ export class NotionPublisher implements NotebookPublisher {
       summaryContainerId: summary.id,
       summaryBlockIds: summaryChildren.map((item) => item.id),
       transcriptPageId: transcript.id,
-      transcriptBlockIds: transcriptChildren.filter((item) => !blockText(item).startsWith("Sidecarr Transcript for Job ID:")).map((item) => item.id),
+      transcriptBlockIds: transcriptChildren.map((item) => item.id),
       versionsContainerId: versions.id
     };
   }
@@ -474,10 +471,9 @@ export class NotionPublisher implements NotebookPublisher {
     } else {
       transcript = await this.notion.createPage(page.page_id, "Full Transcript");
       const transcriptBlocks = await this.notion.appendChildren(transcript.id, [
-        paragraph(`Sidecarr Transcript for Job ID: ${row.job_id}`),
         paragraph("Transcription loading…")
       ]);
-      transcriptIds = transcriptBlocks.slice(1).map((item) => item.id);
+      transcriptIds = transcriptBlocks.map((item) => item.id);
     }
     const currentSummary = await this.notion.children(page.summary_container_id);
     const summaryIds = currentSummary.length === 1 && blockText(currentSummary[0]) === "Waiting for transcription…"
@@ -538,6 +534,22 @@ export class NotionPublisher implements NotebookPublisher {
         review_status_row_id: rows[3].id
       });
     }
+
+    const pageMarker = blocks.find((block) => blockText(block) === `Sidecarr Job ID: ${job.id}`);
+    if (pageMarker) await this.notion.trashBlock(pageMarker.id);
+    const transcriptBlocks = await this.notion.children(page.transcript_page_id);
+    const transcriptMarker = transcriptBlocks.find((block) => blockText(block) === `Sidecarr Transcript for Job ID: ${job.id}`);
+    if (transcriptMarker) await this.notion.trashBlock(transcriptMarker.id);
+  }
+
+  private async hasJobMarker(blocks: NotionObject[], jobId: string): Promise<boolean> {
+    if (blocks.some((block) => blockText(block) === `Sidecarr Job ID: ${jobId}`)) return true;
+    const details = blocks.find((block) => blockText(block) === "Details");
+    if (!details) return false;
+    const tables = (await this.notion.children(details.id)).filter((block) => block.type === "table");
+    if (!tables[0]) return false;
+    const metadataRows = await this.notion.children(tables[0].id);
+    return new Map(metadataRows.map((row) => tableRowValue(row))).get("Scriberr job ID") === jobId;
   }
 
   private async syncAudio(job: ScriberrJob, row: JobRow, page: NotebookPageRow): Promise<NotebookOutcome | undefined> {
@@ -869,12 +881,12 @@ function markdownBlocks(content: string): Block[] {
       blocks.push({ object: "block", type: "heading_2", heading_2: { rich_text: [richText(boldHeading[1])] } });
       continue;
     }
-    const checkbox = line.match(/^\s*[-*]\s+\[([ xX])\]\s+(.+)$/);
+    const checkbox = line.match(/^\s*[-*+]\s+\[([ xX])\]\s+(.+)$/);
     if (checkbox) {
       blocks.push({ object: "block", type: "to_do", to_do: { rich_text: markdownRichText(checkbox[2]), checked: checkbox[1].toLowerCase() === "x" } });
       continue;
     }
-    const bullet = line.match(/^\s*[-*]\s+(.+)$/);
+    const bullet = line.match(/^\s*[-*+]\s+(.+)$/);
     if (bullet) {
       blocks.push({ object: "block", type: "bulleted_list_item", bulleted_list_item: { rich_text: markdownRichText(bullet[1]) } });
       continue;

@@ -263,6 +263,7 @@ test("creates and progressively updates a page without touching user Notes", asy
     assert.match(JSON.stringify(openInScriberr), new RegExp(`http://scriberr.example.test/audio/${jobId}`));
     assert.ok(details);
     assert.equal(topLevel.filter((block) => block.type === "table").length, 0);
+    assert.equal(topLevel.some((block) => blockText(block).startsWith("Sidecarr Job ID:")), false);
     assert.equal((await value.notion.children(details.id)).filter((block) => block.type === "table").length, 2);
     const userNote = (await value.notion.appendChildren(page.page_id, [{
       object: "block",
@@ -271,7 +272,7 @@ test("creates and progressively updates a page without touching user Notes", asy
     }]))[0];
 
     value.db.updateJob(jobId, { sidecar_state: "transcription_complete", scriberr_status: "completed" });
-    value.api.summaryContent = "**Overview**\n\n- **Decision:** useful item";
+    value.api.summaryContent = "**Overview**\n\n- **Decision:** useful item\n+ Follow up";
     const completedRow = value.db.getJob(jobId)!;
     const completed = await publisher.sync({
       ...pending,
@@ -293,6 +294,7 @@ test("creates and progressively updates a page without touching user Notes", asy
 
     const transcriptBlocks = await value.notion.children(page.transcript_page_id);
     assert.ok(transcriptBlocks.some((block) => blockText(block).includes("Speaker 1")));
+    assert.equal(transcriptBlocks.some((block) => blockText(block).startsWith("Sidecarr Transcript for Job ID:")), false);
     const rawTranscript = transcriptBlocks.find((block) => blockText(block) === "Raw transcript data");
     assert.ok(rawTranscript);
     assert.ok((await value.notion.children(rawTranscript.id)).every((block) => block.type === "code"));
@@ -300,6 +302,7 @@ test("creates and progressively updates a page without touching user Notes", asy
     const summaryBlocks = await value.notion.children(page.summary_container_id);
     assert.doesNotMatch(JSON.stringify(summaryBlocks), /\*\*/);
     assert.match(JSON.stringify(summaryBlocks), /"bold":true/);
+    assert.equal(summaryBlocks.filter((block) => block.type === "bulleted_list_item").length, 2);
   } finally {
     value.db.close();
     rmSync(value.directory, { recursive: true, force: true });
