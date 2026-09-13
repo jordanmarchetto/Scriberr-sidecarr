@@ -648,6 +648,7 @@ export class NotionPublisher implements NotebookPublisher {
   private async summaryContent(job: ScriberrJob): Promise<string> {
     const inline = job.summary?.trim() ?? "";
     if (job.status !== "completed") return inline;
+    if (inline) return inline;
     try {
       const summary = await this.scriberr.getSummary(job.id);
       return summary.content?.trim() || inline;

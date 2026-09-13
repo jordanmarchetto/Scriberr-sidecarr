@@ -33,9 +33,11 @@ function config(overrides: NodeJS.ProcessEnv = {}): Config {
 
 class FakeScriberrApi extends ScriberrApi {
   summaryContent = "# Summary\n\n- useful item";
+  summaryLookups = 0;
   audioLength = 4;
 
   override async getSummary(job: string): Promise<ScriberrSummary> {
+    this.summaryLookups += 1;
     return { transcription_id: job, content: this.summaryContent };
   }
 
@@ -285,10 +287,11 @@ test("creates and progressively updates a page without touching user Notes", asy
           { start: 2.5, end: 4, text: "hi", speaker: "SPEAKER_01" }
         ]
       }),
-      summary: "**Overview**\n\n- **Decision:** useful item"
+      summary: value.api.summaryContent
     }, completedRow);
     assert.ok(completed.some((item) => item.event === "notebook_transcript_updated"));
     assert.ok(completed.some((item) => item.event === "notebook_summary_updated"));
+    assert.equal(value.api.summaryLookups, 0);
     assert.equal(value.notion.findBlockForTest(userNote.id)?.in_trash, undefined);
     assert.doesNotMatch(JSON.stringify([...first, ...completed]), /hello|useful item|notion-secret/);
 

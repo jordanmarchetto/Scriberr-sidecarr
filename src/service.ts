@@ -201,11 +201,13 @@ export class SidecarService {
     }
 
     let summaryContent = job.summary?.trim() ?? "";
-    try {
-      const summary = await this.api.getSummary(job.id);
-      summaryContent = summary.content?.trim() || summaryContent;
-    } catch (error) {
-      this.logger.debug({ jobId: job.id, error: this.safeError(error) }, "summary lookup failed");
+    if (!summaryContent) {
+      try {
+        const summary = await this.api.getSummary(job.id);
+        summaryContent = summary.content?.trim() || "";
+      } catch (error) {
+        this.logger.debug({ jobId: job.id, error: this.safeError(error) }, "summary lookup failed");
+      }
     }
 
     if (summaryContent) {
