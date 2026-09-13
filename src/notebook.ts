@@ -25,5 +25,6 @@ export type NotebookOutcome = {
 
 export interface NotebookPublisher {
   readonly provider: string;
+  readonly reconciliationKey?: string;
   sync(job: ScriberrJob, row: JobRow): Promise<NotebookOutcome[]>;
 }

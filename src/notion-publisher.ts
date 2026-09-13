@@ -18,6 +18,8 @@ import type { JobRow, ScriberrJob } from "./types.js";
 
 const maxSimpleUploadBytes = 20 * 1024 * 1024;
 const classificationRefreshMs = 5 * 60 * 1000;
+const transcriptRendererVersion = "v2";
+const summaryRendererVersion = "v2";
 
 type Block = Record<string, unknown>;
 
@@ -42,6 +44,7 @@ type PageShell = {
 
 export class NotionPublisher implements NotebookPublisher {
   readonly provider = "notion";
+  readonly reconciliationKey = "layout:v2";
   readonly parentPageId: string;
 
   constructor(
@@ -101,6 +104,20 @@ export class NotionPublisher implements NotebookPublisher {
       if (outcome) outcomes.push(outcome);
     }
 
+    const layoutOutcome = await this.runOperation(
+      row,
+      this.reconciliationKey,
+      "update_layout",
+      async () => {
+        await this.ensurePageLayout(job, row, page!);
+        return undefined;
+      },
+      true,
+      true
+    );
+    if (layoutOutcome) outcomes.push(layoutOutcome);
+    page = this.db.getNotebookPage(job.id, this.provider)!;
+
     if (page.current_attempt < row.attempt) {
       const outcome = await this.runOperation(row, `version:archive:${row.attempt}`, "archive_version", async () => {
         await this.archiveAttempt(page!, row);
@@ -121,8 +138,7 @@ export class NotionPublisher implements NotebookPublisher {
           ["Recording date", job.created_at ?? row.first_seen_at],
           ["Scriberr status", job.status],
           ["Current attempt", String(row.attempt)],
-          ["Scriberr job ID", job.id],
-          ["Open in Scriberr", this.scriberrPageUrl(job.id)]
+          ["Scriberr job ID", job.id]
         ];
         for (let index = 0; index < Math.min(metadataRows.length, values.length); index += 1) {
           await this.notion.updateBlock(metadataRows[index].id, tableRowBody(values[index]));
@@ -155,11 +171,10 @@ export class NotionPublisher implements NotebookPublisher {
 
     if (job.status === "completed" && job.transcript?.trim()) {
       const transcript = job.transcript.trim();
-      const transcriptHash = hash(transcript);
+      const transcriptHash = hash(`${transcriptRendererVersion}\n${transcript}`);
       if (page.transcript_hash !== transcriptHash) {
         const outcome = await this.runOperation(row, `transcript:${row.attempt}:${transcriptHash}`, "update_transcript", async () => {
-          const blocks = textBlocks(transcript);
-          const ids = await this.replaceOwnedChildren(page!.transcript_page_id, jsonIds(page!.transcript_block_ids_json), blocks);
+          const ids = await this.replaceTranscript(page!, transcript);
           this.db.updateNotebookPage(job.id, this.provider, {
             transcript_block_ids_json: JSON.stringify(ids),
             transcript_hash: transcriptHash
@@ -191,7 +206,7 @@ export class NotionPublisher implements NotebookPublisher {
 
     const summary = await this.summaryContent(job);
     if (summary) {
-      const summaryHash = hash(summary);
+      const summaryHash = hash(`${summaryRendererVersion}\n${summary}`);
       if (page.summary_hash !== summaryHash) {
         const outcome = await this.runOperation(row, `summary:${row.attempt}:${summaryHash}`, "update_summary", async () => {
           const ids = await this.replaceOwnedChildren(
@@ -241,18 +256,10 @@ export class NotionPublisher implements NotebookPublisher {
 
     const initial = await this.notion.appendChildren(pageId, [
       paragraph(this.statusText(job, row)),
-      table([
-        ["Recording date", job.created_at ?? row.first_seen_at],
-        ["Scriberr status", job.status],
-        ["Current attempt", String(row.attempt)],
-        ["Scriberr job ID", job.id],
-        ["Open in Scriberr", this.scriberrPageUrl(job.id)]
-      ]),
-      table([
-        ["Person", "—"],
-        ["Appointment Type", "—"],
-        ["Tags", "—"],
-        ["Review Status", "Needs review"]
+      paragraph("Open in Scriberr", this.scriberrPageUrl(job.id)),
+      toggle("Details", [
+        table(this.metadataRows(job, row)),
+        table(this.classificationRows())
       ]),
       toggle("Audio", [paragraph("Audio loading…")]),
       heading("Notes"),
@@ -260,8 +267,10 @@ export class NotionPublisher implements NotebookPublisher {
       toggle("Summary", [paragraph("Waiting for transcription…")])
     ]);
     const status = required(initial[0], "status block");
-    const metadata = required(initial[1], "metadata table");
-    const classification = required(initial[2], "classification table");
+    const details = required(initial[2], "details container");
+    const detailChildren = await this.notion.children(details.id);
+    const metadata = required(detailChildren[0], "metadata table");
+    const classification = required(detailChildren[1], "classification table");
     const audio = required(initial[3], "audio container");
     const summary = required(initial[6], "summary container");
     const classificationRows = await this.notion.children(classification.id);
@@ -391,7 +400,10 @@ export class NotionPublisher implements NotebookPublisher {
 
   private async recoverShell(pageId: string, blocks: NotionObject[], jobId: string): Promise<PageShell> {
     const byText = (text: string) => blocks.find((block) => blockText(block) === text);
-    const tables = blocks.filter((block) => block.type === "table");
+    const details = byText("Details");
+    const tables = details
+      ? (await this.notion.children(details.id)).filter((block) => block.type === "table")
+      : blocks.filter((block) => block.type === "table");
     const status = blocks.find((block) => blockText(block).startsWith("Status:"));
     const audio = byText("Audio");
     const summary = byText("Summary");
@@ -486,6 +498,48 @@ export class NotionPublisher implements NotebookPublisher {
     });
   }
 
+  private async ensurePageLayout(job: ScriberrJob, row: JobRow, page: NotebookPageRow): Promise<void> {
+    const blocks = await this.notion.children(page.page_id);
+    let link = blocks.find((block) => blockText(block) === "Open in Scriberr");
+    let details = blocks.find((block) => blockText(block) === "Details");
+
+    if (!link) {
+      link = required((await this.notion.appendChildren(
+        page.page_id,
+        [paragraph("Open in Scriberr", this.scriberrPageUrl(job.id))],
+        page.status_block_id
+      ))[0], "Scriberr link");
+    } else if (blockLink(link) !== this.scriberrPageUrl(job.id)) {
+      await this.notion.updateBlock(link.id, paragraphBody("Open in Scriberr", this.scriberrPageUrl(job.id)));
+    }
+
+    if (!details) {
+      await this.captureClassificationEdits(page, true);
+      const refreshed = this.db.getNotebookPage(job.id, this.provider)!;
+      details = required((await this.notion.appendChildren(page.page_id, [
+        toggle("Details", [
+          table(this.metadataRows(job, row)),
+          table(this.classificationRows(refreshed))
+        ])
+      ], link.id))[0], "details container");
+      const tables = (await this.notion.children(details.id)).filter((block) => block.type === "table");
+      const metadata = required(tables[0], "metadata table");
+      const classification = required(tables[1], "classification table");
+      const rows = await this.notion.children(classification.id);
+      if (rows.length < 4) throw new Error("Notion did not create the classification rows");
+      await this.notion.trashBlock(page.metadata_table_id);
+      await this.notion.trashBlock(page.classification_table_id);
+      this.db.updateNotebookPage(job.id, this.provider, {
+        metadata_table_id: metadata.id,
+        classification_table_id: classification.id,
+        person_row_id: rows[0].id,
+        appointment_type_row_id: rows[1].id,
+        tags_row_id: rows[2].id,
+        review_status_row_id: rows[3].id
+      });
+    }
+  }
+
   private async syncAudio(job: ScriberrJob, row: JobRow, page: NotebookPageRow): Promise<NotebookOutcome | undefined> {
     if (job.is_multi_track && !job.merged_audio_path) return undefined;
     const operationKey = `audio:${row.attempt}:${job.status}`;
@@ -556,9 +610,9 @@ export class NotionPublisher implements NotebookPublisher {
     return this.outcome("notebook_audio_skipped", "attach_audio", `audio:skipped`, updated);
   }
 
-  private async captureClassificationEdits(page: NotebookPageRow): Promise<void> {
+  private async captureClassificationEdits(page: NotebookPageRow, force = false): Promise<void> {
     const checked = page.classification_checked_at ? Date.parse(page.classification_checked_at) : 0;
-    if (Date.now() - checked < classificationRefreshMs) return;
+    if (!force && Date.now() - checked < classificationRefreshMs) return;
     const rows = await this.notion.children(page.classification_table_id);
     const values = new Map(rows.map((row) => tableRowValue(row)));
     const fields = [
@@ -595,6 +649,30 @@ export class NotionPublisher implements NotebookPublisher {
     for (const id of oldIds) await this.notion.trashBlock(id);
     const appended = await this.notion.appendChildren(containerId, blocks.length > 0 ? blocks : [paragraph("—")]);
     return appended.map((item) => item.id);
+  }
+
+  private async replaceTranscript(page: NotebookPageRow, content: string): Promise<string[]> {
+    const parsed = parseTranscript(content);
+    if (!parsed) {
+      return this.replaceOwnedChildren(
+        page.transcript_page_id,
+        jsonIds(page.transcript_block_ids_json),
+        codeBlocks(content, "plain text")
+      );
+    }
+
+    const readable = readableTranscriptBlocks(parsed);
+    const blocks = [...readable, toggle("Raw transcript data")];
+    const ids = await this.replaceOwnedChildren(
+      page.transcript_page_id,
+      jsonIds(page.transcript_block_ids_json),
+      blocks
+    );
+    const rawToggleId = ids.at(-1);
+    if (rawToggleId) {
+      await this.notion.appendChildren(rawToggleId, codeBlocks(JSON.stringify(parsed, null, 2), "json"));
+    }
+    return ids;
   }
 
   private async runOperation(
@@ -673,7 +751,25 @@ export class NotionPublisher implements NotebookPublisher {
   }
 
   private scriberrPageUrl(jobId: string): string {
-    return `${this.config.scriberrUrl}/audio/${encodeURIComponent(jobId)}`;
+    return `${this.config.scriberrPublicUrl}/audio/${encodeURIComponent(jobId)}`;
+  }
+
+  private metadataRows(job: ScriberrJob, row: JobRow): string[][] {
+    return [
+      ["Recording date", job.created_at ?? row.first_seen_at],
+      ["Scriberr status", job.status],
+      ["Current attempt", String(row.attempt)],
+      ["Scriberr job ID", job.id]
+    ];
+  }
+
+  private classificationRows(page?: NotebookPageRow): string[][] {
+    return [
+      ["Person", page?.person_value ?? "—"],
+      ["Appointment Type", page?.appointment_type_value ?? "—"],
+      ["Tags", page?.tags_value ?? "—"],
+      ["Review Status", page?.review_status_value ?? "Needs review"]
+    ];
   }
 }
 
@@ -681,8 +777,8 @@ function paragraph(content: string, link?: string): Block {
   return { object: "block", type: "paragraph", paragraph: { rich_text: [richText(content, link)] } };
 }
 
-function paragraphBody(content: string): Block {
-  return { paragraph: { rich_text: [richText(content)] } };
+function paragraphBody(content: string, link?: string): Block {
+  return { paragraph: { rich_text: [richText(content, link)] } };
 }
 
 function heading(content: string): Block {
@@ -735,20 +831,160 @@ function textBlocks(content: string): Block[] {
 }
 
 function markdownBlocks(content: string): Block[] {
-  return content.split(/\r?\n/).flatMap((line): Block[] => {
+  const blocks: Block[] = [];
+  const lines = content.split(/\r?\n/);
+  let inCode = false;
+  let codeLanguage = "plain text";
+  let codeLines: string[] = [];
+  for (const line of lines) {
+    const fence = line.match(/^```([\w#+.-]*)\s*$/);
+    if (fence) {
+      if (inCode) {
+        blocks.push(...codeBlocks(codeLines.join("\n"), notionCodeLanguage(codeLanguage)));
+        codeLines = [];
+        inCode = false;
+      } else {
+        inCode = true;
+        codeLanguage = fence[1] || "plain text";
+      }
+      continue;
+    }
+    if (inCode) {
+      codeLines.push(line);
+      continue;
+    }
+    if (!line.trim()) continue;
+    if (/^\s*(?:-{3,}|\*{3,}|_{3,})\s*$/.test(line)) {
+      blocks.push({ object: "block", type: "divider", divider: {} });
+      continue;
+    }
     const headingMatch = line.match(/^(#{1,3})\s+(.+)$/);
     if (headingMatch) {
       const type = `heading_${headingMatch[1].length}`;
-      return [{ object: "block", type, [type]: { rich_text: [richText(headingMatch[2])] } }];
+      blocks.push({ object: "block", type, [type]: { rich_text: markdownRichText(headingMatch[2]) } });
+      continue;
     }
-    const checkbox = line.match(/^[-*]\s+\[([ xX])\]\s+(.+)$/);
-    if (checkbox) return [{ object: "block", type: "to_do", to_do: { rich_text: [richText(checkbox[2])], checked: checkbox[1].toLowerCase() === "x" } }];
-    const bullet = line.match(/^[-*]\s+(.+)$/);
-    if (bullet) return [{ object: "block", type: "bulleted_list_item", bulleted_list_item: { rich_text: [richText(bullet[1])] } }];
-    const numbered = line.match(/^\d+[.)]\s+(.+)$/);
-    if (numbered) return [{ object: "block", type: "numbered_list_item", numbered_list_item: { rich_text: [richText(numbered[1])] } }];
-    return textBlocks(line);
+    const boldHeading = line.match(/^\*\*([^*]+)\*\*:?\s*$/);
+    if (boldHeading) {
+      blocks.push({ object: "block", type: "heading_2", heading_2: { rich_text: [richText(boldHeading[1])] } });
+      continue;
+    }
+    const checkbox = line.match(/^\s*[-*]\s+\[([ xX])\]\s+(.+)$/);
+    if (checkbox) {
+      blocks.push({ object: "block", type: "to_do", to_do: { rich_text: markdownRichText(checkbox[2]), checked: checkbox[1].toLowerCase() === "x" } });
+      continue;
+    }
+    const bullet = line.match(/^\s*[-*]\s+(.+)$/);
+    if (bullet) {
+      blocks.push({ object: "block", type: "bulleted_list_item", bulleted_list_item: { rich_text: markdownRichText(bullet[1]) } });
+      continue;
+    }
+    const numbered = line.match(/^\s*\d+[.)]\s+(.+)$/);
+    if (numbered) {
+      blocks.push({ object: "block", type: "numbered_list_item", numbered_list_item: { rich_text: markdownRichText(numbered[1]) } });
+      continue;
+    }
+    const quote = line.match(/^>\s?(.*)$/);
+    if (quote) {
+      blocks.push({ object: "block", type: "quote", quote: { rich_text: markdownRichText(quote[1]) } });
+      continue;
+    }
+    blocks.push({ object: "block", type: "paragraph", paragraph: { rich_text: markdownRichText(line) } });
+  }
+  if (codeLines.length) blocks.push(...codeBlocks(codeLines.join("\n"), notionCodeLanguage(codeLanguage)));
+  return blocks.length ? blocks : [paragraph("—")];
+}
+
+type TranscriptSegment = { start?: number; end?: number; text?: string; speaker?: string };
+type ParsedTranscript = { text?: string; language?: string; segments?: TranscriptSegment[] } & Record<string, unknown>;
+
+function parseTranscript(content: string): ParsedTranscript | undefined {
+  try {
+    const parsed = JSON.parse(content) as unknown;
+    return parsed && typeof parsed === "object" && !Array.isArray(parsed) ? parsed as ParsedTranscript : undefined;
+  } catch {
+    return undefined;
+  }
+}
+
+function readableTranscriptBlocks(transcript: ParsedTranscript): Block[] {
+  const segments = Array.isArray(transcript.segments) ? transcript.segments : [];
+  if (!segments.length) return textBlocks(typeof transcript.text === "string" ? transcript.text : "Transcript unavailable");
+  const speakerNumbers = new Map<string, number>();
+  return segments.flatMap((segment): Block[] => {
+    const text = typeof segment.text === "string" ? segment.text.trim() : "";
+    if (!text) return [];
+    const rawSpeaker = typeof segment.speaker === "string" && segment.speaker.trim() ? segment.speaker.trim() : "Speaker";
+    if (!speakerNumbers.has(rawSpeaker)) speakerNumbers.set(rawSpeaker, speakerNumbers.size + 1);
+    const speaker = /^SPEAKER[_ -]?\d+$/i.test(rawSpeaker) ? `Speaker ${speakerNumbers.get(rawSpeaker)}` : rawSpeaker;
+    const timestamp = typeof segment.start === "number" ? `[${formatTimestamp(segment.start)}] ` : "";
+    return [richParagraph([
+      annotatedText(`${timestamp}${speaker}: `, { bold: true }),
+      richText(text)
+    ])];
   });
+}
+
+function richParagraph(items: Array<Record<string, unknown>>): Block {
+  return { object: "block", type: "paragraph", paragraph: { rich_text: items } };
+}
+
+function annotatedText(content: string, annotations: { bold?: boolean; italic?: boolean; code?: boolean }, link?: string): Record<string, unknown> {
+  return {
+    ...richText(content, link),
+    annotations: {
+      bold: annotations.bold ?? false,
+      italic: annotations.italic ?? false,
+      strikethrough: false,
+      underline: false,
+      code: annotations.code ?? false,
+      color: "default"
+    }
+  };
+}
+
+function markdownRichText(content: string): Array<Record<string, unknown>> {
+  const result: Array<Record<string, unknown>> = [];
+  const pattern = /(\*\*([^*]+)\*\*|`([^`]+)`|\*([^*]+)\*|\[([^\]]+)\]\((https?:\/\/[^)]+)\))/g;
+  let offset = 0;
+  for (const match of content.matchAll(pattern)) {
+    const index = match.index ?? 0;
+    if (index > offset) result.push(richText(content.slice(offset, index)));
+    if (match[2]) result.push(annotatedText(match[2], { bold: true }));
+    else if (match[3]) result.push(annotatedText(match[3], { code: true }));
+    else if (match[4]) result.push(annotatedText(match[4], { italic: true }));
+    else if (match[5] && match[6]) result.push(richText(match[5], match[6]));
+    offset = index + match[0].length;
+  }
+  if (offset < content.length) result.push(richText(content.slice(offset)));
+  return result.length ? result : [richText(content)];
+}
+
+function codeBlocks(content: string, language: string): Block[] {
+  const chunks: string[] = [];
+  for (let offset = 0; offset < content.length; offset += 2000) chunks.push(content.slice(offset, offset + 2000));
+  if (!chunks.length) chunks.push("");
+  return chunks.map((chunk) => ({
+    object: "block",
+    type: "code",
+    code: { rich_text: [richText(chunk)], language }
+  }));
+}
+
+function notionCodeLanguage(language: string): string {
+  const normalized = language.toLowerCase();
+  const supported = new Set(["bash", "c", "c++", "c#", "css", "docker", "go", "graphql", "html", "java", "javascript", "json", "markdown", "python", "ruby", "rust", "shell", "sql", "typescript", "xml", "yaml"]);
+  return supported.has(normalized) ? normalized : "plain text";
+}
+
+function formatTimestamp(seconds: number): string {
+  const whole = Math.max(0, Math.floor(seconds));
+  const hours = Math.floor(whole / 3600);
+  const minutes = Math.floor((whole % 3600) / 60);
+  const remainder = whole % 60;
+  return hours > 0
+    ? `${hours}:${String(minutes).padStart(2, "0")}:${String(remainder).padStart(2, "0")}`
+    : `${minutes}:${String(remainder).padStart(2, "0")}`;
 }
 
 function cloneBlock(block: NotionObject): Block | undefined {
@@ -790,6 +1026,16 @@ function childPageTitle(block: NotionObject): string {
   return child && typeof child === "object" && typeof (child as { title?: unknown }).title === "string"
     ? (child as { title: string }).title
     : "";
+}
+
+function blockLink(block: NotionObject): string | undefined {
+  const value = block.paragraph;
+  if (!value || typeof value !== "object") return undefined;
+  const items = (value as { rich_text?: unknown }).rich_text;
+  if (!Array.isArray(items) || !items[0] || typeof items[0] !== "object") return undefined;
+  const item = items[0] as { href?: unknown; text?: { link?: { url?: unknown } } };
+  if (typeof item.href === "string") return item.href;
+  return typeof item.text?.link?.url === "string" ? item.text.link.url : undefined;
 }
 
 function required(value: NotionObject | undefined, label: string): NotionObject {

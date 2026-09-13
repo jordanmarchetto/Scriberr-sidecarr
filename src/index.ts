@@ -26,6 +26,7 @@ try {
   logger.info({
     discoveryMode: config.discoveryMode,
     scriberrEndpoint: safeEndpoint(config.scriberrUrl),
+    scriberrPublicEndpoint: safeEndpoint(config.scriberrPublicUrl),
     mqttEndpoint: safeEndpoint(config.mqttUrl),
     mqttTopicPrefix: config.mqttTopicPrefix,
     watchFolder: config.watchFolder,

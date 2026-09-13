@@ -11,6 +11,7 @@ const configSchema = z.object({
   SIDECARR_WATCH_FOLDER: z.string().default("/watch/transcripts"),
   SIDECARR_SCAN_INTERVAL_SECONDS: z.coerce.number().int().positive().default(30),
   SIDECARR_SCRIBERR_URL: z.string().url(),
+  SIDECARR_SCRIBERR_PUBLIC_URL: z.string().url().optional(),
   SIDECARR_SCRIBERR_API_KEY: z.string().min(1),
   SIDECARR_API_TIMEOUT_SECONDS: z.coerce.number().int().positive().default(15),
   SIDECARR_API_MAX_ATTEMPTS: z.coerce.number().int().min(1).max(5).default(3),
@@ -59,6 +60,7 @@ export type Config = {
   watchFolder: string;
   scanIntervalMs: number;
   scriberrUrl: string;
+  scriberrPublicUrl: string;
   scriberrApiKey: string;
   apiTimeoutMs: number;
   apiMaxAttempts: number;
@@ -93,6 +95,7 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): Config {
     watchFolder: parsed.SIDECARR_WATCH_FOLDER,
     scanIntervalMs: parsed.SIDECARR_SCAN_INTERVAL_SECONDS * 1000,
     scriberrUrl: parsed.SIDECARR_SCRIBERR_URL.replace(/\/$/, ""),
+    scriberrPublicUrl: (parsed.SIDECARR_SCRIBERR_PUBLIC_URL ?? parsed.SIDECARR_SCRIBERR_URL).replace(/\/$/, ""),
     scriberrApiKey: parsed.SIDECARR_SCRIBERR_API_KEY,
     mqttUrl: parsed.SIDECARR_MQTT_URL,
     apiTimeoutMs: parsed.SIDECARR_API_TIMEOUT_SECONDS * 1000,

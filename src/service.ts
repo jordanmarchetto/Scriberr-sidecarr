@@ -11,6 +11,11 @@ import { ScriberrApi, ScriberrApiError } from "./scriberr-api.js";
 import type { JobRow, ScriberrJob, SidecarState, WebhookSignalRow } from "./types.js";
 
 const jobIdPattern = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
+const terminalPollIntervalMs = 15 * 60 * 1000;
+const failedPollBackoffMs = 5 * 60 * 1000;
+const missingJobPollIntervalMs = 6 * 60 * 60 * 1000;
+const backgroundPollLimit = 5;
+const terminalStates = new Set<SidecarState>(["summary_complete", "summary_failed", "transcription_failed"]);
 
 export class SidecarService {
   private cycleRunning = false;
@@ -62,7 +67,22 @@ export class SidecarService {
             this.metrics.incrementDiscovered("webhook");
           }
         }
-        for (const job of this.db.listJobs()) {
+        const jobs = this.db.listJobs();
+        const signaled = jobs.filter((job) => {
+          const jobSignals = signalsByJob.get(job.job_id) ?? [];
+          return jobSignals.length > 0 && this.shouldPoll(job, jobSignals);
+        });
+        const background = jobs
+          .filter((job) => !signalsByJob.has(job.job_id) && this.shouldPoll(job))
+          .sort((left, right) => this.pollPriority(left) - this.pollPriority(right))
+          .slice(0, backgroundPollLimit);
+        this.logger.debug({
+          trackedJobs: jobs.length,
+          signaledJobs: signaled.length,
+          backgroundJobs: background.length,
+          deferredJobs: jobs.length - signaled.length - background.length
+        }, "poll candidates selected");
+        for (const job of [...signaled, ...background]) {
           const jobSignals = signalsByJob.get(job.job_id) ?? [];
           if (await this.poll(job, jobSignals)) {
             this.db.markWebhookSignalsProcessed(
@@ -105,7 +125,16 @@ export class SidecarService {
     try {
       job = await this.api.getJob(previous.job_id);
     } catch (error) {
-      this.db.updateJob(previous.job_id, { last_checked_at: checkedAt, last_error: this.safeError(error) });
+      const missing = error instanceof ScriberrApiError && error.status === 404;
+      this.db.updateJob(previous.job_id, {
+        last_checked_at: checkedAt,
+        last_error: this.safeError(error),
+        ...(missing ? { scriberr_status: "not_found" } : {})
+      });
+      if (missing) {
+        this.logger.info({ jobId: previous.job_id }, "Scriberr job no longer exists; suppressing routine polling");
+        return true;
+      }
       this.logger.warn({ jobId: previous.job_id, error: this.safeError(error) }, "Scriberr job lookup failed");
       return false;
     }
@@ -284,7 +313,7 @@ export class SidecarService {
       source: row.source,
       attempt: row.attempt,
       occurred_at: new Date().toISOString(),
-      scriberr_url: this.config.scriberrUrl,
+      scriberr_url: this.config.scriberrPublicUrl,
       ...(eventType.endsWith("_failed") && row.last_error ? { error: this.safeError(row.last_error) } : {})
     });
     this.logger.debug({
@@ -297,6 +326,27 @@ export class SidecarService {
 
   private safeError(error: unknown): string {
     return sanitizeError(error instanceof ScriberrApiError ? error.message : error);
+  }
+
+  private shouldPoll(job: JobRow, signals: WebhookSignalRow[] = []): boolean {
+    const elapsed = job.last_checked_at ? Date.now() - Date.parse(job.last_checked_at) : Number.POSITIVE_INFINITY;
+    const hasNewSignal = signals.some((signal) => !job.last_checked_at || Date.parse(signal.received_at) > Date.parse(job.last_checked_at));
+    if (hasNewSignal) return true;
+    if (this.notebook?.needsReconciliation(job.job_id)) return true;
+    if (job.scriberr_status === "not_found") {
+      return this.filesystemDiscoveryEnabled && elapsed >= missingJobPollIntervalMs;
+    }
+    if (!this.filesystemDiscoveryEnabled && terminalStates.has(job.sidecar_state)) return false;
+    if (job.last_error && elapsed < failedPollBackoffMs) return false;
+    if (terminalStates.has(job.sidecar_state) && elapsed < terminalPollIntervalMs) return false;
+    return true;
+  }
+
+  private pollPriority(job: JobRow): number {
+    if (["pending_transcription", "processing_transcription", "summary_pending", "summary_processing"].includes(job.sidecar_state)) return 0;
+    if (job.sidecar_state === "discovered" && !job.last_error) return 1;
+    if (terminalStates.has(job.sidecar_state)) return 3;
+    return 2;
   }
 
   private async syncNotebook(job: ScriberrJob): Promise<void> {

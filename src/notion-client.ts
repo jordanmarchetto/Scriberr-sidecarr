@@ -88,12 +88,17 @@ export class NotionClient {
     return results;
   }
 
-  async appendChildren(blockId: string, children: Array<Record<string, unknown>>): Promise<NotionObject[]> {
+  async appendChildren(blockId: string, children: Array<Record<string, unknown>>, afterBlockId?: string): Promise<NotionObject[]> {
     const results: NotionObject[] = [];
     for (let offset = 0; offset < children.length; offset += 100) {
       const response = await this.request<NotionList<NotionObject>>(`/blocks/${blockId}/children`, {
         method: "PATCH",
-        body: JSON.stringify({ children: children.slice(offset, offset + 100) })
+        body: JSON.stringify({
+          children: children.slice(offset, offset + 100),
+          ...(offset === 0 && afterBlockId ? {
+            position: { type: "after_block", after_block: { id: afterBlockId } }
+          } : {})
+        })
       });
       results.push(...response.results);
     }

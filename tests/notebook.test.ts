@@ -20,6 +20,7 @@ const logger = pino({ level: "silent" });
 function config(overrides: NodeJS.ProcessEnv = {}): Config {
   return loadConfig({
     SIDECARR_SCRIBERR_URL: "http://scriberr",
+    SIDECARR_SCRIBERR_PUBLIC_URL: "http://scriberr.example.test",
     SIDECARR_SCRIBERR_API_KEY: "api-key",
     SIDECARR_MQTT_URL: "mqtt://mqtt",
     SIDECARR_NOTEBOOK_PROVIDER: "notion",
@@ -31,10 +32,11 @@ function config(overrides: NodeJS.ProcessEnv = {}): Config {
 }
 
 class FakeScriberrApi extends ScriberrApi {
+  summaryContent = "# Summary\n\n- useful item";
   audioLength = 4;
 
   override async getSummary(job: string): Promise<ScriberrSummary> {
-    return { transcription_id: job, content: "# Summary\n\n- useful item" };
+    return { transcription_id: job, content: this.summaryContent };
   }
 
   override async getAudio(): Promise<Response> {
@@ -194,6 +196,8 @@ test("validates optional Notion configuration and parses parent page URLs", () =
     SIDECARR_MQTT_URL: "mqtt://mqtt"
   });
   assert.equal(disabled.notebookProvider, undefined);
+  assert.equal(disabled.scriberrPublicUrl, "http://scriberr");
+  assert.equal(config().scriberrPublicUrl, "http://scriberr.example.test");
   assert.throws(() => loadConfig({
     SIDECARR_SCRIBERR_URL: "http://scriberr",
     SIDECARR_SCRIBERR_API_KEY: "api-key",
@@ -252,6 +256,14 @@ test("creates and progressively updates a page without touching user Notes", asy
     ]);
     const page = value.db.getNotebookPage(jobId, "notion");
     assert.ok(page);
+    const topLevel = await value.notion.children(page.page_id);
+    const openInScriberr = topLevel.find((block) => blockText(block) === "Open in Scriberr");
+    const details = topLevel.find((block) => blockText(block) === "Details");
+    assert.ok(openInScriberr);
+    assert.match(JSON.stringify(openInScriberr), new RegExp(`http://scriberr.example.test/audio/${jobId}`));
+    assert.ok(details);
+    assert.equal(topLevel.filter((block) => block.type === "table").length, 0);
+    assert.equal((await value.notion.children(details.id)).filter((block) => block.type === "table").length, 2);
     const userNote = (await value.notion.appendChildren(page.page_id, [{
       object: "block",
       type: "paragraph",
@@ -259,17 +271,35 @@ test("creates and progressively updates a page without touching user Notes", asy
     }]))[0];
 
     value.db.updateJob(jobId, { sidecar_state: "transcription_complete", scriberr_status: "completed" });
+    value.api.summaryContent = "**Overview**\n\n- **Decision:** useful item";
     const completedRow = value.db.getJob(jobId)!;
     const completed = await publisher.sync({
       ...pending,
       status: "completed",
-      transcript: "Speaker 1: hello\nSpeaker 2: hi",
-      summary: "# Summary\n\n- useful item"
+      transcript: JSON.stringify({
+        text: "hello hi",
+        language: "en",
+        segments: [
+          { start: 0, end: 2.5, text: "hello", speaker: "SPEAKER_00" },
+          { start: 2.5, end: 4, text: "hi", speaker: "SPEAKER_01" }
+        ]
+      }),
+      summary: "**Overview**\n\n- **Decision:** useful item"
     }, completedRow);
     assert.ok(completed.some((item) => item.event === "notebook_transcript_updated"));
     assert.ok(completed.some((item) => item.event === "notebook_summary_updated"));
     assert.equal(value.notion.findBlockForTest(userNote.id)?.in_trash, undefined);
-    assert.doesNotMatch(JSON.stringify([...first, ...completed]), /Speaker 1|useful item|notion-secret/);
+    assert.doesNotMatch(JSON.stringify([...first, ...completed]), /hello|useful item|notion-secret/);
+
+    const transcriptBlocks = await value.notion.children(page.transcript_page_id);
+    assert.ok(transcriptBlocks.some((block) => blockText(block).includes("Speaker 1")));
+    const rawTranscript = transcriptBlocks.find((block) => blockText(block) === "Raw transcript data");
+    assert.ok(rawTranscript);
+    assert.ok((await value.notion.children(rawTranscript.id)).every((block) => block.type === "code"));
+
+    const summaryBlocks = await value.notion.children(page.summary_container_id);
+    assert.doesNotMatch(JSON.stringify(summaryBlocks), /\*\*/);
+    assert.match(JSON.stringify(summaryBlocks), /"bold":true/);
   } finally {
     value.db.close();
     rmSync(value.directory, { recursive: true, force: true });

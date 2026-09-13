@@ -32,6 +32,8 @@ Copy .env.sample to .env and set the Scriberr API key and MQTT values:
 
 The default image is docker.io/jordanmarchetto/scriberr-sidecarr:latest. The API key is sent to Scriberr as X-API-Key. Sidecarr never places the key, transcript, or summary content in MQTT messages or logs.
 
+`SIDECARR_SCRIBERR_URL` is the Docker-internal API address. If users reach Scriberr through a different hostname, set `SIDECARR_SCRIBERR_PUBLIC_URL` to that browser-facing base URL. Sidecarr uses the public URL for clickable Notion and MQTT links.
+
 Safe Scriberr API reads retry transient network errors and HTTP 408, 429, and 5xx responses with bounded exponential backoff. SIDECARR_API_TIMEOUT_SECONDS, SIDECARR_API_MAX_ATTEMPTS, and SIDECARR_API_RETRY_BASE_MILLISECONDS control that behavior. Summary-creation and webhook-creation requests are not automatically retried because doing so could create duplicate work.
 
 ## Choose a discovery mode

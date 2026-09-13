@@ -43,6 +43,12 @@ export class NotebookService {
     for (const outcome of outcomes) this.emit(row, outcome);
   }
 
+  needsReconciliation(jobId: string): boolean {
+    const key = this.publisher.reconciliationKey;
+    if (!key || !this.db.getNotebookPage(jobId, this.publisher.provider)) return false;
+    return !this.db.getNotebookOperation(jobId, this.publisher.provider, key);
+  }
+
   private emit(row: JobRow, outcome: NotebookOutcome): void {
     const occurredAt = new Date().toISOString();
     const queued = this.db.ensureEventWithKey(row, outcome.event, `${row.attempt}:${outcome.occurrenceKey}`, {
