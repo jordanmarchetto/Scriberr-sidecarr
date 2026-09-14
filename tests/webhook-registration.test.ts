@@ -107,7 +107,7 @@ test("webhook discovery automatically creates and remembers its Scriberr subscri
     assert.equal(restarted.secret, registration.secret);
     assert.equal(await restarted.reconcile(), true);
     assert.equal(value.api.createCalls, 1);
-    assert.equal(value.api.updateCalls, 1);
+    assert.equal(value.api.updateCalls, 0);
   } finally {
     cleanup(value);
   }

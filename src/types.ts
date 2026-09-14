@@ -14,6 +14,16 @@ export type ScriberrJob = {
   is_multi_track?: boolean;
 };
 
+export type ScriberrJobListResponse = {
+  jobs: ScriberrJob[];
+  pagination: {
+    page: number;
+    limit: number;
+    total: number;
+    pages: number;
+  };
+};
+
 export type ScriberrSummary = {
   transcription_id?: string;
   content?: string | null;

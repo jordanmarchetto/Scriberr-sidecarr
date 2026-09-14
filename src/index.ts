@@ -3,6 +3,7 @@ import { loadConfig } from "./config.js";
 import { StateStore } from "./db.js";
 import { MqttPublisher } from "./mqtt-publisher.js";
 import { Metrics } from "./metrics.js";
+import { ScriberrJobReconciler } from "./job-reconciliation.js";
 import { NotebookService } from "./notebook-service.js";
 import { NotionPublisher } from "./notion-publisher.js";
 import { NotificationService } from "./notification-service.js";
@@ -34,6 +35,7 @@ try {
     mqttTopicPrefix: config.mqttTopicPrefix,
     watchFolder: config.watchFolder,
     scanIntervalSeconds: config.scanIntervalMs / 1000,
+    reconciliationIntervalSeconds: config.reconciliationIntervalMs / 1000,
     apiTimeoutSeconds: config.apiTimeoutMs / 1000,
     apiMaxAttempts: config.apiMaxAttempts,
     webhookCallbackUrl: safeEndpoint(config.webhookCallbackUrl),
@@ -50,6 +52,7 @@ try {
   const api = new ScriberrApi(config, metrics, logger);
   const readiness = new ScriberrReadinessGate(api, logger);
   const registration = new WebhookRegistration(config, db, api, logger);
+  const jobReconciliation = new ScriberrJobReconciler(config, db, api, logger);
   const runtimeConfig = { ...config, webhookSecret: registration.secret };
   const mqtt = new MqttPublisher(runtimeConfig, db, logger, metrics);
   const notifications = new NotificationService(runtimeConfig, db, logger);
@@ -60,7 +63,17 @@ try {
     logger.info({ provider: notion.provider, parentPageId: notion.parentPageId }, "notebook destination enabled");
   }
   const notebook = notion ? new NotebookService(runtimeConfig, db, notion, logger) : undefined;
-  const service = new SidecarService(runtimeConfig, db, api, mqtt, logger, metrics, notebook, notifications);
+  const service = new SidecarService(
+    runtimeConfig,
+    db,
+    api,
+    mqtt,
+    logger,
+    metrics,
+    notebook,
+    notifications,
+    jobReconciliation
+  );
   let interval: NodeJS.Timeout | undefined;
 
   const runCycle = () => readiness.run(async () => {

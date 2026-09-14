@@ -128,3 +128,46 @@ test("availability check reports an unreachable Scriberr without API retries", a
     await close(server);
   }
 });
+
+test("lists recently updated jobs through the reconciliation endpoint", async () => {
+  let requestUrl = "";
+  const server = createServer((request, response) => {
+    requestUrl = request.url ?? "";
+    response.writeHead(200, { "Content-Type": "application/json" });
+    response.end(JSON.stringify({
+      jobs: [{ id: "job-1", status: "completed", updated_at: "2026-09-14T12:01:00Z" }],
+      pagination: { page: 1, limit: 20, total: 1, pages: 1 }
+    }));
+  });
+
+  try {
+    const url = await listen(server);
+    const api = new ScriberrApi(loadConfig({
+      SIDECARR_SCRIBERR_URL: url,
+      SIDECARR_SCRIBERR_API_KEY: "api-key"
+    }));
+    const result = await api.listJobsUpdatedAfter("2026-09-14T12:00:00Z");
+    assert.equal(result.jobs[0]?.id, "job-1");
+    assert.match(requestUrl, /updated_after=2026-09-14T12%3A00%3A00Z/);
+    assert.match(requestUrl, /limit=20/);
+    assert.match(requestUrl, /sort_by=updated_at/);
+  } finally {
+    await close(server);
+  }
+});
+
+test("rate limits repeated connection retry warnings while preserving failures", async () => {
+  const captured = captureLogger();
+  const api = new ScriberrApi(loadConfig({
+    SIDECARR_SCRIBERR_URL: "http://127.0.0.1:1",
+    SIDECARR_SCRIBERR_API_KEY: "api-key",
+    SIDECARR_API_MAX_ATTEMPTS: "2",
+    SIDECARR_API_RETRY_BASE_MILLISECONDS: "0"
+  }), new Metrics(), captured.logger);
+
+  await assert.rejects(() => api.getJob("job-1"));
+  await assert.rejects(() => api.getJob("job-2"));
+
+  const retryLogs = captured.records.filter((record) => record.msg === "Scriberr API request failed; retrying");
+  assert.equal(retryLogs.length, 1);
+});

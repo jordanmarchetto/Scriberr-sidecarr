@@ -36,6 +36,12 @@ SIDECARR_SCAN_INTERVAL_SECONDS=30
 
 Both modes use Scriberr's authenticated API as the authoritative source of job state.
 
+Every five minutes, Sidecarr also checks Scriberr's list endpoint for recently updated jobs that the primary discovery path may have missed. The first run records a baseline rather than importing historical jobs. Adjust the interval if needed:
+
+```dotenv
+SIDECARR_RECONCILIATION_INTERVAL_SECONDS=300
+```
+
 ## Scriberr readiness
 
 Sidecarr starts its own listener immediately, then checks Scriberr's `/health` endpoint once per processing interval. Until Scriberr is reachable, webhook registration, filesystem scanning, and job API requests remain paused. One message is logged when waiting begins and another when Scriberr becomes available.
