@@ -149,6 +149,128 @@ test("missing webhook routes fall back without repeated registration attempts", 
   }
 });
 
+test("temporary webhook failures are backed off instead of retried every cycle", async () => {
+  const value = scenario();
+  try {
+    value.api.listError = new Error("temporary outage");
+    const registration = new WebhookRegistration(value.config, value.db, value.api, logger);
+    assert.equal(await registration.reconcile(), false);
+    assert.equal(await registration.reconcile(), false);
+    assert.equal(value.api.listCalls, 1);
+  } finally {
+    cleanup(value);
+  }
+});
+
+test("webhook mode does not poll terminal jobs without a new signal", async () => {
+  const value = scenario();
+  try {
+    const row = value.db.discover(jobId, "", new Date().toISOString(), "webhook").job;
+    value.db.updateJob(row.job_id, { sidecar_state: "summary_complete", scriberr_status: "completed" });
+    let jobLookups = 0;
+    const api = new class extends ScriberrApi {
+      override async getJob(): Promise<ScriberrJob> {
+        jobLookups += 1;
+        return { id: jobId, status: "completed", summary: "done" };
+      }
+    }(value.config);
+    const mqtt = { flush: async () => undefined } as unknown as MqttPublisher;
+    const service = new SidecarService(value.config, value.db, api, mqtt, logger);
+    service.setFilesystemDiscoveryEnabled(false);
+
+    await service.runCycle();
+
+    assert.equal(jobLookups, 0);
+  } finally {
+    cleanup(value);
+  }
+});
+
+test("a missing Scriberr job is recorded once and not polled forever", async () => {
+  const value = scenario();
+  try {
+    value.db.discover(jobId, "", new Date().toISOString(), "webhook");
+    let jobLookups = 0;
+    const api = new class extends ScriberrApi {
+      override async getJob(): Promise<ScriberrJob> {
+        jobLookups += 1;
+        throw new ScriberrApiError(404, "job not found");
+      }
+    }(value.config);
+    const mqtt = { flush: async () => undefined } as unknown as MqttPublisher;
+    const service = new SidecarService(value.config, value.db, api, mqtt, logger);
+    service.setFilesystemDiscoveryEnabled(false);
+
+    await service.runCycle();
+    await service.runCycle();
+
+    assert.equal(jobLookups, 1);
+    assert.equal(value.db.getJob(jobId)?.scriberr_status, "not_found");
+  } finally {
+    cleanup(value);
+  }
+});
+
+test("failed background lookups back off and each cycle has a bounded batch", async () => {
+  const value = scenario();
+  try {
+    for (let index = 0; index < 8; index += 1) {
+      value.db.discover(`job-${index}`, "", new Date().toISOString(), "filesystem");
+    }
+    let jobLookups = 0;
+    const api = new class extends ScriberrApi {
+      override async getJob(): Promise<ScriberrJob> {
+        jobLookups += 1;
+        throw new Error("temporary timeout");
+      }
+    }(value.config);
+    const mqtt = { flush: async () => undefined } as unknown as MqttPublisher;
+    const service = new SidecarService(value.config, value.db, api, mqtt, logger);
+    service.setFilesystemDiscoveryEnabled(false);
+
+    await service.runCycle();
+    assert.equal(jobLookups, 5);
+    await service.runCycle();
+    assert.equal(jobLookups, 8);
+    await service.runCycle();
+    assert.equal(jobLookups, 8);
+  } finally {
+    cleanup(value);
+  }
+});
+
+test("a failed webhook-triggered lookup retains the signal but respects backoff", async () => {
+  const value = scenario();
+  try {
+    const receivedAt = new Date().toISOString();
+    value.db.recordWebhookSignal("delivery-1", {
+      schema_version: "1",
+      event: "transcription.completed",
+      job_id: jobId,
+      status: "completed",
+      occurred_at: receivedAt
+    }, receivedAt);
+    let jobLookups = 0;
+    const api = new class extends ScriberrApi {
+      override async getJob(): Promise<ScriberrJob> {
+        jobLookups += 1;
+        throw new Error("temporary timeout");
+      }
+    }(value.config);
+    const mqtt = { flush: async () => undefined } as unknown as MqttPublisher;
+    const service = new SidecarService(value.config, value.db, api, mqtt, logger);
+    service.setFilesystemDiscoveryEnabled(false);
+
+    await service.runCycle();
+    await service.runCycle();
+
+    assert.equal(jobLookups, 1);
+    assert.equal(value.db.pendingWebhookSignalCount(), 1);
+  } finally {
+    cleanup(value);
+  }
+});
+
 test("filesystem mode skips webhook management", async () => {
   const value = scenario({ SIDECARR_DISCOVERY_MODE: "filesystem" });
   try {

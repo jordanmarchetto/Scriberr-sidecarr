@@ -11,6 +11,7 @@ const configSchema = z.object({
   SIDECARR_WATCH_FOLDER: z.string().default("/watch/transcripts"),
   SIDECARR_SCAN_INTERVAL_SECONDS: z.coerce.number().int().positive().default(30),
   SIDECARR_SCRIBERR_URL: z.string().url(),
+  SIDECARR_SCRIBERR_PUBLIC_URL: z.string().url().optional(),
   SIDECARR_SCRIBERR_API_KEY: z.string().min(1),
   SIDECARR_API_TIMEOUT_SECONDS: z.coerce.number().int().positive().default(15),
   SIDECARR_API_MAX_ATTEMPTS: z.coerce.number().int().min(1).max(5).default(3),
@@ -31,7 +32,27 @@ const configSchema = z.object({
   SIDECARR_WEBHOOK_PATH: z.string().startsWith("/").default("/webhooks/scriberr"),
   SIDECARR_WEBHOOK_CALLBACK_URL: z.string().url().optional(),
   SIDECARR_WEBHOOK_SECRET: z.string().optional(),
+  SIDECARR_NOTEBOOK_PROVIDER: z.enum(["notion"]).optional(),
+  SIDECARR_NOTION_TOKEN: z.string().min(1).optional(),
+  SIDECARR_NOTION_PARENT_PAGE_URL: z.string().url().optional(),
+  SIDECARR_NOTION_BACKFILL: bool,
   SIDECARR_DB_PATH: z.string().default("/app/data/sidecar.db")
+}).superRefine((value, context) => {
+  const notionConfigured = Boolean(
+    value.SIDECARR_NOTEBOOK_PROVIDER
+      || value.SIDECARR_NOTION_TOKEN
+      || value.SIDECARR_NOTION_PARENT_PAGE_URL
+  );
+  if (!notionConfigured) return;
+  if (value.SIDECARR_NOTEBOOK_PROVIDER !== "notion") {
+    context.addIssue({ code: z.ZodIssueCode.custom, path: ["SIDECARR_NOTEBOOK_PROVIDER"], message: "must be notion when Notion settings are present" });
+  }
+  if (!value.SIDECARR_NOTION_TOKEN) {
+    context.addIssue({ code: z.ZodIssueCode.custom, path: ["SIDECARR_NOTION_TOKEN"], message: "is required when Notion is enabled" });
+  }
+  if (!value.SIDECARR_NOTION_PARENT_PAGE_URL) {
+    context.addIssue({ code: z.ZodIssueCode.custom, path: ["SIDECARR_NOTION_PARENT_PAGE_URL"], message: "is required when Notion is enabled" });
+  }
 });
 
 export type Config = {
@@ -39,6 +60,7 @@ export type Config = {
   watchFolder: string;
   scanIntervalMs: number;
   scriberrUrl: string;
+  scriberrPublicUrl: string;
   scriberrApiKey: string;
   apiTimeoutMs: number;
   apiMaxAttempts: number;
@@ -59,6 +81,10 @@ export type Config = {
   webhookPath: string;
   webhookCallbackUrl: string;
   webhookSecret?: string;
+  notebookProvider?: "notion";
+  notionToken?: string;
+  notionParentPageUrl?: string;
+  notionBackfill: boolean;
   dbPath: string;
 };
 
@@ -69,6 +95,7 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): Config {
     watchFolder: parsed.SIDECARR_WATCH_FOLDER,
     scanIntervalMs: parsed.SIDECARR_SCAN_INTERVAL_SECONDS * 1000,
     scriberrUrl: parsed.SIDECARR_SCRIBERR_URL.replace(/\/$/, ""),
+    scriberrPublicUrl: (parsed.SIDECARR_SCRIBERR_PUBLIC_URL ?? parsed.SIDECARR_SCRIBERR_URL).replace(/\/$/, ""),
     scriberrApiKey: parsed.SIDECARR_SCRIBERR_API_KEY,
     mqttUrl: parsed.SIDECARR_MQTT_URL,
     apiTimeoutMs: parsed.SIDECARR_API_TIMEOUT_SECONDS * 1000,
@@ -90,6 +117,10 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): Config {
     webhookCallbackUrl: parsed.SIDECARR_WEBHOOK_CALLBACK_URL
       ?? `http://scriberr-sidecarr:${parsed.SIDECARR_WEBHOOK_PORT}${parsed.SIDECARR_WEBHOOK_PATH}`,
     webhookSecret: parsed.SIDECARR_WEBHOOK_SECRET,
+    notebookProvider: parsed.SIDECARR_NOTEBOOK_PROVIDER,
+    notionToken: parsed.SIDECARR_NOTION_TOKEN,
+    notionParentPageUrl: parsed.SIDECARR_NOTION_PARENT_PAGE_URL,
+    notionBackfill: parsed.SIDECARR_NOTION_BACKFILL,
     dbPath: parsed.SIDECARR_DB_PATH
   };
 }

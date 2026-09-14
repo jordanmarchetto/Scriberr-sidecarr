@@ -11,6 +11,59 @@ export type PendingEvent = {
   publish_attempts: number;
 };
 
+export type NotebookPageRow = {
+  job_id: string;
+  provider: string;
+  parent_page_id: string;
+  page_id: string;
+  page_url: string;
+  current_attempt: number;
+  status_block_id: string;
+  metadata_table_id: string;
+  classification_table_id: string;
+  person_row_id: string;
+  appointment_type_row_id: string;
+  tags_row_id: string;
+  review_status_row_id: string;
+  person_value: string | null;
+  person_provenance: string;
+  appointment_type_value: string | null;
+  appointment_type_provenance: string;
+  tags_value: string | null;
+  tags_provenance: string;
+  review_status_value: string | null;
+  review_status_provenance: string;
+  classification_checked_at: string | null;
+  audio_container_id: string;
+  audio_block_id: string | null;
+  audio_state: string;
+  summary_container_id: string;
+  summary_block_ids_json: string;
+  summary_hash: string | null;
+  transcript_page_id: string;
+  transcript_block_ids_json: string;
+  transcript_hash: string | null;
+  versions_container_id: string;
+  last_status: string | null;
+  last_title: string | null;
+  created_at: string;
+  updated_at: string;
+};
+
+export type NotebookOperationRow = {
+  id: number;
+  job_id: string;
+  provider: string;
+  operation_key: string;
+  operation: string;
+  attempts: number;
+  status: "pending" | "completed" | "failed";
+  last_error: string | null;
+  created_at: string;
+  updated_at: string;
+  completed_at: string | null;
+};
+
 export class StateStore {
   private readonly db: Database.Database;
 
@@ -71,6 +124,65 @@ export class StateStore {
         key TEXT PRIMARY KEY,
         value TEXT NOT NULL
       );
+
+      CREATE TABLE IF NOT EXISTS notebook_pages (
+        job_id TEXT NOT NULL,
+        provider TEXT NOT NULL,
+        parent_page_id TEXT NOT NULL,
+        page_id TEXT NOT NULL,
+        page_url TEXT NOT NULL,
+        current_attempt INTEGER NOT NULL,
+        status_block_id TEXT NOT NULL,
+        metadata_table_id TEXT NOT NULL,
+        classification_table_id TEXT NOT NULL,
+        person_row_id TEXT NOT NULL,
+        appointment_type_row_id TEXT NOT NULL,
+        tags_row_id TEXT NOT NULL,
+        review_status_row_id TEXT NOT NULL,
+        person_value TEXT,
+        person_provenance TEXT NOT NULL DEFAULT 'unset',
+        appointment_type_value TEXT,
+        appointment_type_provenance TEXT NOT NULL DEFAULT 'unset',
+        tags_value TEXT,
+        tags_provenance TEXT NOT NULL DEFAULT 'unset',
+        review_status_value TEXT,
+        review_status_provenance TEXT NOT NULL DEFAULT 'automatic',
+        classification_checked_at TEXT,
+        audio_container_id TEXT NOT NULL,
+        audio_block_id TEXT,
+        audio_state TEXT NOT NULL DEFAULT 'pending',
+        summary_container_id TEXT NOT NULL,
+        summary_block_ids_json TEXT NOT NULL DEFAULT '[]',
+        summary_hash TEXT,
+        transcript_page_id TEXT NOT NULL,
+        transcript_block_ids_json TEXT NOT NULL DEFAULT '[]',
+        transcript_hash TEXT,
+        versions_container_id TEXT NOT NULL,
+        last_status TEXT,
+        last_title TEXT,
+        created_at TEXT NOT NULL,
+        updated_at TEXT NOT NULL,
+        PRIMARY KEY(job_id, provider),
+        UNIQUE(provider, page_id)
+      );
+
+      CREATE TABLE IF NOT EXISTS notebook_operations (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        job_id TEXT NOT NULL,
+        provider TEXT NOT NULL,
+        operation_key TEXT NOT NULL,
+        operation TEXT NOT NULL,
+        attempts INTEGER NOT NULL DEFAULT 0,
+        status TEXT NOT NULL DEFAULT 'pending',
+        last_error TEXT,
+        completed_at TEXT,
+        created_at TEXT NOT NULL,
+        updated_at TEXT NOT NULL,
+        UNIQUE(job_id, provider, operation_key)
+      );
+
+      CREATE INDEX IF NOT EXISTS notebook_operations_pending_idx
+        ON notebook_operations(status, id);
     `);
     const signalColumns = this.db.prepare("PRAGMA table_info(webhook_signals)").all() as Array<{ name: string }>;
     if (!signalColumns.some((column) => column.name === "error_message")) {
@@ -204,6 +316,130 @@ export class StateStore {
       VALUES (?, ?, ?, ?, ?)
     `).run(job.job_id, eventType, occurrenceKey, JSON.stringify(payload), now);
     return result.changes === 1;
+  }
+
+  ensureEventWithKey(job: JobRow, eventType: string, occurrenceKey: string, payload: object): boolean {
+    const now = new Date().toISOString();
+    const result = this.db.prepare(`
+      INSERT OR IGNORE INTO events
+        (job_id, event_type, occurrence_key, payload_json, created_at)
+      VALUES (?, ?, ?, ?, ?)
+    `).run(job.job_id, eventType, occurrenceKey, JSON.stringify(payload), now);
+    return result.changes === 1;
+  }
+
+  getNotebookPage(jobId: string, provider: string): NotebookPageRow | undefined {
+    return this.db.prepare(`SELECT * FROM notebook_pages WHERE job_id = ? AND provider = ?`)
+      .get(jobId, provider) as NotebookPageRow | undefined;
+  }
+
+  listNotebookPages(provider: string): NotebookPageRow[] {
+    return this.db.prepare(`SELECT * FROM notebook_pages WHERE provider = ? ORDER BY created_at`)
+      .all(provider) as NotebookPageRow[];
+  }
+
+  saveNotebookPage(row: NotebookPageRow): void {
+    this.db.prepare(`
+      INSERT INTO notebook_pages (
+        job_id, provider, parent_page_id, page_id, page_url, current_attempt,
+        status_block_id, metadata_table_id, classification_table_id,
+        person_row_id, appointment_type_row_id, tags_row_id, review_status_row_id,
+        person_value, person_provenance, appointment_type_value, appointment_type_provenance,
+        tags_value, tags_provenance, review_status_value, review_status_provenance,
+        classification_checked_at, audio_container_id, audio_block_id, audio_state,
+        summary_container_id, summary_block_ids_json, summary_hash,
+        transcript_page_id, transcript_block_ids_json, transcript_hash,
+        versions_container_id, last_status, last_title, created_at, updated_at
+      ) VALUES (
+        @job_id, @provider, @parent_page_id, @page_id, @page_url, @current_attempt,
+        @status_block_id, @metadata_table_id, @classification_table_id,
+        @person_row_id, @appointment_type_row_id, @tags_row_id, @review_status_row_id,
+        @person_value, @person_provenance, @appointment_type_value, @appointment_type_provenance,
+        @tags_value, @tags_provenance, @review_status_value, @review_status_provenance,
+        @classification_checked_at, @audio_container_id, @audio_block_id, @audio_state,
+        @summary_container_id, @summary_block_ids_json, @summary_hash,
+        @transcript_page_id, @transcript_block_ids_json, @transcript_hash,
+        @versions_container_id, @last_status, @last_title, @created_at, @updated_at
+      ) ON CONFLICT(job_id, provider) DO UPDATE SET
+        parent_page_id = excluded.parent_page_id,
+        page_id = excluded.page_id,
+        page_url = excluded.page_url,
+        current_attempt = excluded.current_attempt,
+        status_block_id = excluded.status_block_id,
+        metadata_table_id = excluded.metadata_table_id,
+        classification_table_id = excluded.classification_table_id,
+        person_row_id = excluded.person_row_id,
+        appointment_type_row_id = excluded.appointment_type_row_id,
+        tags_row_id = excluded.tags_row_id,
+        review_status_row_id = excluded.review_status_row_id,
+        person_value = excluded.person_value,
+        person_provenance = excluded.person_provenance,
+        appointment_type_value = excluded.appointment_type_value,
+        appointment_type_provenance = excluded.appointment_type_provenance,
+        tags_value = excluded.tags_value,
+        tags_provenance = excluded.tags_provenance,
+        review_status_value = excluded.review_status_value,
+        review_status_provenance = excluded.review_status_provenance,
+        classification_checked_at = excluded.classification_checked_at,
+        audio_container_id = excluded.audio_container_id,
+        audio_block_id = excluded.audio_block_id,
+        audio_state = excluded.audio_state,
+        summary_container_id = excluded.summary_container_id,
+        summary_block_ids_json = excluded.summary_block_ids_json,
+        summary_hash = excluded.summary_hash,
+        transcript_page_id = excluded.transcript_page_id,
+        transcript_block_ids_json = excluded.transcript_block_ids_json,
+        transcript_hash = excluded.transcript_hash,
+        versions_container_id = excluded.versions_container_id,
+        last_status = excluded.last_status,
+        last_title = excluded.last_title,
+        updated_at = excluded.updated_at
+    `).run(row);
+  }
+
+  updateNotebookPage(jobId: string, provider: string, fields: Partial<NotebookPageRow>): void {
+    const entries = Object.entries(fields).filter(([key]) => !["job_id", "provider"].includes(key));
+    if (entries.length === 0) return;
+    const set = entries.map(([key]) => `${key} = @${key}`).join(", ");
+    this.db.prepare(`UPDATE notebook_pages SET ${set}, updated_at = @updated_at WHERE job_id = @job_id AND provider = @provider`).run({
+      ...Object.fromEntries(entries),
+      updated_at: new Date().toISOString(),
+      job_id: jobId,
+      provider
+    });
+  }
+
+  beginNotebookOperation(jobId: string, provider: string, operationKey: string, operation: string): NotebookOperationRow {
+    const now = new Date().toISOString();
+    this.db.prepare(`
+      INSERT OR IGNORE INTO notebook_operations
+        (job_id, provider, operation_key, operation, created_at, updated_at)
+      VALUES (?, ?, ?, ?, ?, ?)
+    `).run(jobId, provider, operationKey, operation, now, now);
+    return this.getNotebookOperation(jobId, provider, operationKey)!;
+  }
+
+  getNotebookOperation(jobId: string, provider: string, operationKey: string): NotebookOperationRow | undefined {
+    return this.db.prepare(`
+      SELECT * FROM notebook_operations WHERE job_id = ? AND provider = ? AND operation_key = ?
+    `).get(jobId, provider, operationKey) as NotebookOperationRow | undefined;
+  }
+
+  recordNotebookOperationFailure(id: number, error: string, exhausted: boolean): void {
+    this.db.prepare(`
+      UPDATE notebook_operations
+      SET attempts = attempts + 1, status = ?, last_error = ?, updated_at = ?
+      WHERE id = ?
+    `).run(exhausted ? "failed" : "pending", sanitizeError(error), new Date().toISOString(), id);
+  }
+
+  completeNotebookOperation(id: number): void {
+    const now = new Date().toISOString();
+    this.db.prepare(`
+      UPDATE notebook_operations
+      SET status = 'completed', completed_at = ?, last_error = NULL, updated_at = ?
+      WHERE id = ?
+    `).run(now, now, id);
   }
 
   pendingEvents(limit = 100): PendingEvent[] {

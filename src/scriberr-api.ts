@@ -41,6 +41,15 @@ export class ScriberrApi {
     return this.request<ScriberrSummarySettings>("/api/v1/summaries/settings");
   }
 
+  async getAudio(jobId: string): Promise<Response> {
+    const response = await this.fetch(`/api/v1/transcription/${encodeURIComponent(jobId)}/audio`, {}, this.config.apiTimeoutMs);
+    if (!response.ok) {
+      this.metrics.incrementApiFailure();
+      await this.throwResponse(response);
+    }
+    return response;
+  }
+
   async listWebhooks(): Promise<ScriberrWebhook[]> {
     return this.request<ScriberrWebhook[]>("/api/v1/webhooks/", {}, webhookManagementTimeoutMs);
   }

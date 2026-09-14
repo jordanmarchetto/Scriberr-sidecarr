@@ -9,6 +9,9 @@ export type ScriberrJob = {
   error_message?: string | null;
   created_at?: string;
   updated_at?: string;
+  audio_path?: string | null;
+  merged_audio_path?: string | null;
+  is_multi_track?: boolean;
 };
 
 export type ScriberrSummary = {

@@ -48,7 +48,7 @@ export class WebhookRegistration {
 
   async reconcile(): Promise<boolean> {
     if (this.config.discoveryMode === "filesystem" || this.unsupported) return false;
-    if (this.active && Date.now() < this.nextCheckAt) return true;
+    if (Date.now() < this.nextCheckAt) return this.active;
 
     this.logger.debug("reconciling Scriberr webhook registration");
 
@@ -66,6 +66,7 @@ export class WebhookRegistration {
         return false;
       }
       this.active = false;
+      this.nextCheckAt = Date.now() + reconciliationIntervalMs;
       if (!this.warnedUnavailable) {
         this.warnedUnavailable = true;
         this.logger.warn(
@@ -105,6 +106,7 @@ export class WebhookRegistration {
       return true;
     } catch (error) {
       this.active = false;
+      this.nextCheckAt = Date.now() + reconciliationIntervalMs;
       if (!this.warnedUnavailable) {
         this.warnedUnavailable = true;
         this.logger.warn(
