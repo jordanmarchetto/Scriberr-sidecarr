@@ -36,6 +36,12 @@ SIDECARR_SCAN_INTERVAL_SECONDS=30
 
 Both modes use Scriberr's authenticated API as the authoritative source of job state.
 
+## Scriberr readiness
+
+Sidecarr starts its own listener immediately, then checks Scriberr's `/health` endpoint once per processing interval. Until Scriberr is reachable, webhook registration, filesystem scanning, and job API requests remain paused. One message is logged when waiting begins and another when Scriberr becomes available.
+
+This behavior also applies if Scriberr becomes unavailable later. A Scriberr version without a `/health` route is treated as reachable once it returns an HTTP response, allowing the normal compatibility checks to proceed.
+
 ## Advanced webhook overrides
 
 Most installations should omit these values:

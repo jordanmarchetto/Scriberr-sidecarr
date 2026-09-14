@@ -8,6 +8,7 @@ import { StateStore } from "./db.js";
 import { sanitizeError } from "./errors.js";
 import { Metrics } from "./metrics.js";
 import type { ScriberrWebhookPayload } from "./types.js";
+import type { ScriberrReadinessStatus } from "./scriberr-readiness.js";
 
 const maxBodyBytes = 1024 * 1024;
 
@@ -45,7 +46,8 @@ export class WebhookReceiver {
     private readonly db: StateStore,
     private readonly onSignal: () => void | Promise<void>,
     private readonly logger: pino.Logger,
-    private readonly metrics = new Metrics()
+    private readonly metrics = new Metrics(),
+    private readonly scriberrStatus: () => ScriberrReadinessStatus = () => "waiting"
   ) {
     this.server = createServer((request, response) => {
       void this.handle(request, response);
@@ -85,7 +87,7 @@ export class WebhookReceiver {
     try {
       const url = new URL(request.url ?? "/", "http://sidecar");
       if (request.method === "GET" && url.pathname === "/health") {
-        this.respond(response, 200, { status: "ok" });
+        this.respond(response, 200, { status: "ok", scriberr: this.scriberrStatus() });
         return;
       }
       if (request.method === "GET" && url.pathname === "/metrics") {

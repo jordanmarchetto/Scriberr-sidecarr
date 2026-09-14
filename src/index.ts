@@ -7,6 +7,7 @@ import { NotebookService } from "./notebook-service.js";
 import { NotionPublisher } from "./notion-publisher.js";
 import { NotificationService } from "./notification-service.js";
 import { ScriberrApi } from "./scriberr-api.js";
+import { ScriberrReadinessGate } from "./scriberr-readiness.js";
 import { SidecarService } from "./service.js";
 import { WebhookReceiver } from "./webhook-receiver.js";
 import { WebhookRegistration } from "./webhook-registration.js";
@@ -47,6 +48,7 @@ try {
   const db = new StateStore(config.dbPath);
   logger.info({ dbPath: config.dbPath }, "state database opened");
   const api = new ScriberrApi(config, metrics, logger);
+  const readiness = new ScriberrReadinessGate(api, logger);
   const registration = new WebhookRegistration(config, db, api, logger);
   const runtimeConfig = { ...config, webhookSecret: registration.secret };
   const mqtt = new MqttPublisher(runtimeConfig, db, logger, metrics);
@@ -59,14 +61,21 @@ try {
   }
   const notebook = notion ? new NotebookService(runtimeConfig, db, notion, logger) : undefined;
   const service = new SidecarService(runtimeConfig, db, api, mqtt, logger, metrics, notebook, notifications);
-  const receiver = new WebhookReceiver(runtimeConfig, db, () => service.runCycle(), logger, metrics);
   let interval: NodeJS.Timeout | undefined;
 
-  const runCycle = async () => {
+  const runCycle = () => readiness.run(async () => {
     const webhookActive = await registration.reconcile();
     service.setFilesystemDiscoveryEnabled(!webhookActive);
     await service.runCycle();
-  };
+  });
+  const receiver = new WebhookReceiver(
+    runtimeConfig,
+    db,
+    async () => { await runCycle(); },
+    logger,
+    metrics,
+    () => readiness.status
+  );
 
   let shuttingDown = false;
   const shutdown = async () => {

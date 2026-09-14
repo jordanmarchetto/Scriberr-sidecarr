@@ -2,7 +2,13 @@
 
 ## Health and metrics
 
-`GET /health` returns HTTP 200 while the listener is running and is used by the image's Docker health check.
+`GET /health` returns HTTP 200 while the listener is running and is used by the image's Docker health check. It also reports whether Scriberr is ready without making an upstream outage look like a Sidecarr failure:
+
+```json
+{"status":"ok","scriberr":"waiting"}
+```
+
+The `scriberr` value changes to `ready` after the upstream service becomes reachable.
 
 `GET /metrics` exposes Prometheus-compatible counts for tracked jobs, pending work, failures, discovery sources, and processing durations. Keep both endpoints on a trusted Docker network unless an authenticated reverse proxy protects them.
 

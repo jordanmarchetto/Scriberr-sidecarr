@@ -113,3 +113,38 @@ test("receiver rejects unsupported webhook payloads", async () => {
     rmSync(directory, { recursive: true, force: true });
   }
 });
+
+test("health remains successful while reporting Scriberr readiness", async () => {
+  const directory = mkdtempSync(path.join(tmpdir(), "scriberr-sidecarr-health-"));
+  const db = new StateStore(path.join(directory, "state.db"));
+  const config = loadConfig({
+    SIDECARR_SCRIBERR_URL: "http://scriberr",
+    SIDECARR_SCRIBERR_API_KEY: "api-key"
+  });
+  let scriberrStatus: "waiting" | "ready" = "waiting";
+  const receiver = new WebhookReceiver(
+    config,
+    db,
+    () => undefined,
+    pino({ level: "silent" }),
+    undefined,
+    () => scriberrStatus
+  );
+
+  try {
+    await receiver.listen(0, "127.0.0.1");
+    const url = `http://127.0.0.1:${receiver.port()}/health`;
+    const waiting = await fetch(url);
+    assert.equal(waiting.status, 200);
+    assert.deepEqual(await waiting.json(), { status: "ok", scriberr: "waiting" });
+
+    scriberrStatus = "ready";
+    const ready = await fetch(url);
+    assert.equal(ready.status, 200);
+    assert.deepEqual(await ready.json(), { status: "ok", scriberr: "ready" });
+  } finally {
+    await receiver.close();
+    db.close();
+    rmSync(directory, { recursive: true, force: true });
+  }
+});
