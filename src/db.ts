@@ -11,6 +11,17 @@ export type PendingEvent = {
   publish_attempts: number;
 };
 
+export type NotificationDestination = "webhook" | "smtp";
+
+export type NotificationDeliveryRow = {
+  id: number;
+  job_id: string;
+  attempt: number;
+  destination: NotificationDestination;
+  payload_json: string;
+  attempts: number;
+};
+
 export type NotebookPageRow = {
   job_id: string;
   provider: string;
@@ -87,6 +98,10 @@ export class StateStore {
         summary_requested_at TEXT,
         summary_started_at TEXT,
         summary_deadline_at TEXT,
+        summary_expected INTEGER,
+        job_ready_at TEXT,
+        job_ready_outcome TEXT,
+        job_ready_suppressed INTEGER NOT NULL DEFAULT 0,
         last_error TEXT,
         created_at TEXT NOT NULL,
         updated_at TEXT NOT NULL
@@ -183,10 +198,52 @@ export class StateStore {
 
       CREATE INDEX IF NOT EXISTS notebook_operations_pending_idx
         ON notebook_operations(status, id);
+
+      CREATE TABLE IF NOT EXISTS notification_deliveries (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        job_id TEXT NOT NULL,
+        attempt INTEGER NOT NULL,
+        destination TEXT NOT NULL,
+        payload_json TEXT NOT NULL,
+        attempts INTEGER NOT NULL DEFAULT 0,
+        delivered_at TEXT,
+        last_error TEXT,
+        created_at TEXT NOT NULL,
+        updated_at TEXT NOT NULL,
+        UNIQUE(job_id, attempt, destination)
+      );
+
+      CREATE INDEX IF NOT EXISTS notification_deliveries_pending_idx
+        ON notification_deliveries(delivered_at, attempts, id);
     `);
+    const jobColumns = this.db.prepare("PRAGMA table_info(jobs)").all() as Array<{ name: string }>;
+    if (!jobColumns.some((column) => column.name === "summary_expected")) {
+      this.db.exec("ALTER TABLE jobs ADD COLUMN summary_expected INTEGER");
+    }
+    if (!jobColumns.some((column) => column.name === "job_ready_at")) {
+      this.db.exec("ALTER TABLE jobs ADD COLUMN job_ready_at TEXT");
+    }
+    if (!jobColumns.some((column) => column.name === "job_ready_outcome")) {
+      this.db.exec("ALTER TABLE jobs ADD COLUMN job_ready_outcome TEXT");
+    }
+    if (!jobColumns.some((column) => column.name === "job_ready_suppressed")) {
+      this.db.exec("ALTER TABLE jobs ADD COLUMN job_ready_suppressed INTEGER NOT NULL DEFAULT 0");
+    }
     const signalColumns = this.db.prepare("PRAGMA table_info(webhook_signals)").all() as Array<{ name: string }>;
     if (!signalColumns.some((column) => column.name === "error_message")) {
       this.db.exec("ALTER TABLE webhook_signals ADD COLUMN error_message TEXT");
+    }
+
+    const readyMigration = this.db.prepare("SELECT value FROM settings WHERE key = 'job_ready_initialized_v1'").get();
+    if (!readyMigration) {
+      this.db.transaction(() => {
+        this.db.prepare(`
+          UPDATE jobs SET job_ready_suppressed = 1
+          WHERE sidecar_state IN ('summary_complete', 'summary_failed', 'transcription_failed')
+        `).run();
+        this.db.prepare("INSERT INTO settings (key, value) VALUES ('job_ready_initialized_v1', ?)")
+          .run(new Date().toISOString());
+      })();
     }
 
   }
@@ -301,6 +358,10 @@ export class StateStore {
       summary_requested_at = NULL,
       summary_started_at = NULL,
       summary_deadline_at = NULL,
+      summary_expected = NULL,
+      job_ready_at = NULL,
+      job_ready_outcome = NULL,
+      job_ready_suppressed = 0,
       last_error = NULL,
       updated_at = ?
       WHERE job_id = ?`).run(now, jobId);
@@ -457,5 +518,48 @@ export class StateStore {
 
   markPublished(id: number, now: string): void {
     this.db.prepare("UPDATE events SET published_at = ?, last_error = NULL WHERE id = ?").run(now, id);
+  }
+
+  ensureNotificationDelivery(
+    job: JobRow,
+    destination: NotificationDestination,
+    payload: object
+  ): boolean {
+    const now = new Date().toISOString();
+    const result = this.db.prepare(`
+      INSERT OR IGNORE INTO notification_deliveries
+        (job_id, attempt, destination, payload_json, created_at, updated_at)
+      VALUES (?, ?, ?, ?, ?, ?)
+    `).run(job.job_id, job.attempt, destination, JSON.stringify(payload), now, now);
+    return result.changes === 1;
+  }
+
+  pendingNotificationDeliveries(maxAttempts = 3, limit = 100): NotificationDeliveryRow[] {
+    return this.db.prepare(`
+      SELECT id, job_id, attempt, destination, payload_json, attempts
+      FROM notification_deliveries
+      WHERE delivered_at IS NULL AND attempts < ?
+      ORDER BY id
+      LIMIT ?
+    `).all(maxAttempts, limit) as NotificationDeliveryRow[];
+  }
+
+  markNotificationDelivered(id: number, now: string): void {
+    this.db.prepare(`
+      UPDATE notification_deliveries
+      SET delivered_at = ?, last_error = NULL, updated_at = ?
+      WHERE id = ?
+    `).run(now, now, id);
+  }
+
+  recordNotificationFailure(id: number, error: string): number {
+    const now = new Date().toISOString();
+    this.db.prepare(`
+      UPDATE notification_deliveries
+      SET attempts = attempts + 1, last_error = ?, updated_at = ?
+      WHERE id = ?
+    `).run(sanitizeError(error), now, id);
+    const row = this.db.prepare("SELECT attempts FROM notification_deliveries WHERE id = ?").get(id) as { attempts: number };
+    return row.attempts;
   }
 }

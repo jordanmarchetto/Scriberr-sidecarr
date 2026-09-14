@@ -6,6 +6,16 @@ const bool = z
   .default("false")
   .transform((value) => ["1", "true", "yes", "on"].includes(value.toLowerCase()));
 
+const optionalString = z.preprocess(
+  (value) => typeof value === "string" && value.trim() === "" ? undefined : value,
+  z.string().min(1).optional()
+);
+
+const optionalUrl = z.preprocess(
+  (value) => typeof value === "string" && value.trim() === "" ? undefined : value,
+  z.string().url().optional()
+);
+
 const configSchema = z.object({
   SIDECARR_DISCOVERY_MODE: z.enum(["webhook", "filesystem"]).default("webhook"),
   SIDECARR_WATCH_FOLDER: z.string().default("/watch/transcripts"),
@@ -16,12 +26,18 @@ const configSchema = z.object({
   SIDECARR_API_TIMEOUT_SECONDS: z.coerce.number().int().positive().default(15),
   SIDECARR_API_MAX_ATTEMPTS: z.coerce.number().int().min(1).max(5).default(3),
   SIDECARR_API_RETRY_BASE_MILLISECONDS: z.coerce.number().int().min(0).default(500),
-  SIDECARR_MQTT_URL: z.string().min(1),
-  SIDECARR_MQTT_USERNAME: z.string().optional(),
-  SIDECARR_MQTT_PASSWORD: z.string().optional(),
+  SIDECARR_MQTT_URL: optionalUrl,
+  SIDECARR_MQTT_USERNAME: optionalString,
+  SIDECARR_MQTT_PASSWORD: optionalString,
   SIDECARR_MQTT_TOPIC_PREFIX: z.string().min(1).default("home/audio/scriberr"),
   SIDECARR_MQTT_QOS: z.coerce.number().int().min(0).max(2).default(1),
   SIDECARR_MQTT_RETAIN: bool,
+  SIDECARR_NOTIFICATION_WEBHOOK_URL: optionalUrl,
+  SIDECARR_NOTIFICATION_WEBHOOK_TOKEN: optionalString,
+  SIDECARR_SMTP_URL: optionalString,
+  SIDECARR_EMAIL_FROM: optionalString,
+  SIDECARR_EMAIL_TO: optionalString,
+  SIDECARR_EMAIL_SUBJECT_TEMPLATE: z.string().min(1).default("Scriberr job ready: {title}"),
   SIDECARR_AUTOGENERATE_SUMMARY: bool,
   SIDECARR_SUMMARY_MODEL: z.string().optional(),
   SIDECARR_SUMMARY_TEMPLATE: z.string().optional().default("Default"),
@@ -38,6 +54,31 @@ const configSchema = z.object({
   SIDECARR_NOTION_BACKFILL: bool,
   SIDECARR_DB_PATH: z.string().default("/app/data/sidecar.db")
 }).superRefine((value, context) => {
+  if (!value.SIDECARR_MQTT_URL && (value.SIDECARR_MQTT_USERNAME || value.SIDECARR_MQTT_PASSWORD)) {
+    context.addIssue({ code: z.ZodIssueCode.custom, path: ["SIDECARR_MQTT_URL"], message: "is required when MQTT credentials are present" });
+  }
+  if (!value.SIDECARR_NOTIFICATION_WEBHOOK_URL && value.SIDECARR_NOTIFICATION_WEBHOOK_TOKEN) {
+    context.addIssue({ code: z.ZodIssueCode.custom, path: ["SIDECARR_NOTIFICATION_WEBHOOK_URL"], message: "is required when a notification webhook token is present" });
+  }
+  const smtpConfigured = Boolean(value.SIDECARR_SMTP_URL || value.SIDECARR_EMAIL_FROM || value.SIDECARR_EMAIL_TO);
+  if (smtpConfigured) {
+    if (!value.SIDECARR_SMTP_URL) {
+      context.addIssue({ code: z.ZodIssueCode.custom, path: ["SIDECARR_SMTP_URL"], message: "is required when email notifications are enabled" });
+    } else {
+      try {
+        const url = new URL(value.SIDECARR_SMTP_URL);
+        if (!["smtp:", "smtps:"].includes(url.protocol) || !url.hostname) throw new Error("invalid SMTP URL");
+      } catch {
+        context.addIssue({ code: z.ZodIssueCode.custom, path: ["SIDECARR_SMTP_URL"], message: "must be a valid smtp:// or smtps:// URL" });
+      }
+    }
+    if (!value.SIDECARR_EMAIL_FROM) {
+      context.addIssue({ code: z.ZodIssueCode.custom, path: ["SIDECARR_EMAIL_FROM"], message: "is required when email notifications are enabled" });
+    }
+    if (!value.SIDECARR_EMAIL_TO) {
+      context.addIssue({ code: z.ZodIssueCode.custom, path: ["SIDECARR_EMAIL_TO"], message: "is required when email notifications are enabled" });
+    }
+  }
   const notionConfigured = Boolean(
     value.SIDECARR_NOTEBOOK_PROVIDER
       || value.SIDECARR_NOTION_TOKEN
@@ -65,12 +106,18 @@ export type Config = {
   apiTimeoutMs: number;
   apiMaxAttempts: number;
   apiRetryBaseMs: number;
-  mqttUrl: string;
+  mqttUrl?: string;
   mqttUsername?: string;
   mqttPassword?: string;
   mqttTopicPrefix: string;
   mqttQos: 0 | 1 | 2;
   mqttRetain: boolean;
+  notificationWebhookUrl?: string;
+  notificationWebhookToken?: string;
+  smtpUrl?: string;
+  emailFrom?: string;
+  emailTo?: string;
+  emailSubjectTemplate: string;
   autogenerateSummary: boolean;
   summaryModel?: string;
   summaryTemplate?: string;
@@ -106,6 +153,12 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): Config {
     mqttTopicPrefix: parsed.SIDECARR_MQTT_TOPIC_PREFIX.replace(/\/$/, ""),
     mqttQos: parsed.SIDECARR_MQTT_QOS as 0 | 1 | 2,
     mqttRetain: parsed.SIDECARR_MQTT_RETAIN,
+    notificationWebhookUrl: parsed.SIDECARR_NOTIFICATION_WEBHOOK_URL,
+    notificationWebhookToken: parsed.SIDECARR_NOTIFICATION_WEBHOOK_TOKEN,
+    smtpUrl: parsed.SIDECARR_SMTP_URL,
+    emailFrom: parsed.SIDECARR_EMAIL_FROM,
+    emailTo: parsed.SIDECARR_EMAIL_TO,
+    emailSubjectTemplate: parsed.SIDECARR_EMAIL_SUBJECT_TEMPLATE,
     autogenerateSummary: parsed.SIDECARR_AUTOGENERATE_SUMMARY,
     summaryModel: parsed.SIDECARR_SUMMARY_MODEL,
     summaryTemplate: parsed.SIDECARR_SUMMARY_TEMPLATE,

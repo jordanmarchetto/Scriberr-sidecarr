@@ -7,15 +7,16 @@ import { sanitizeError } from "./errors.js";
 import { Metrics } from "./metrics.js";
 import { MqttPublisher } from "./mqtt-publisher.js";
 import { NotebookService } from "./notebook-service.js";
+import { NotificationService, type JobReadyOutcome, type JobReadyPayload } from "./notification-service.js";
 import { ScriberrApi, ScriberrApiError } from "./scriberr-api.js";
-import type { JobRow, ScriberrJob, SidecarState, WebhookSignalRow } from "./types.js";
+import type { JobRow, ScriberrJob, ScriberrSummarySettings, SidecarState, WebhookSignalRow } from "./types.js";
 
 const jobIdPattern = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
 const terminalPollIntervalMs = 15 * 60 * 1000;
 const failedPollBackoffMs = 5 * 60 * 1000;
 const missingJobPollIntervalMs = 6 * 60 * 60 * 1000;
 const backgroundPollLimit = 5;
-const terminalStates = new Set<SidecarState>(["summary_complete", "summary_failed", "transcription_failed"]);
+const terminalStates = new Set<SidecarState>(["summary_complete", "summary_failed", "job_ready", "transcription_failed"]);
 
 export class SidecarService {
   private cycleRunning = false;
@@ -31,7 +32,8 @@ export class SidecarService {
     private readonly mqtt: MqttPublisher,
     private readonly logger: pino.Logger,
     private readonly metrics = new Metrics(),
-    private readonly notebook?: NotebookService
+    private readonly notebook?: NotebookService,
+    private readonly notifications?: NotificationService
   ) {}
 
   setFilesystemDiscoveryEnabled(enabled: boolean): void {
@@ -92,6 +94,7 @@ export class SidecarService {
           }
         }
         await this.mqtt.flush();
+        await this.notifications?.flush();
       } while (this.cycleQueued);
     } finally {
       this.cycleRunning = false;
@@ -185,17 +188,19 @@ export class SidecarService {
         this.transition(current, "summary_failed", "summary_failed", job.status, job.title);
       }
       await this.syncNotebook(job);
+      await this.markReady(job);
     }
     return true;
   }
 
   private async handleCompleted(row: JobRow, job: ScriberrJob, forceSummaryCheck = false): Promise<void> {
     const nowMs = Date.now();
-    const lastSummaryCheck = this.summaryCheckedAt.get(job.id) ?? 0;
+    const summaryCheckKey = `${job.id}:${row.attempt}`;
+    const lastSummaryCheck = this.summaryCheckedAt.get(summaryCheckKey) ?? 0;
     if (!forceSummaryCheck && nowMs - lastSummaryCheck < this.config.summaryPollIntervalMs) return;
-    this.summaryCheckedAt.set(job.id, nowMs);
+    this.summaryCheckedAt.set(summaryCheckKey, nowMs);
     let current = this.db.getJob(row.job_id)!;
-    if (!["transcription_complete", "summary_pending", "summary_processing", "summary_complete", "summary_failed"].includes(current.sidecar_state)) {
+    if (!["transcription_complete", "summary_pending", "summary_processing", "summary_complete", "summary_failed", "job_ready"].includes(current.sidecar_state)) {
       this.transition(current, "transcription_complete", "transcription_complete", job.status, job.title);
       current = this.db.getJob(row.job_id)!;
     }
@@ -211,7 +216,39 @@ export class SidecarService {
     }
 
     if (summaryContent) {
+      this.db.updateJob(row.job_id, { summary_expected: 1 });
       this.transition(current, "summary_complete", "summary_complete", job.status, job.title);
+      return;
+    }
+
+    current = this.db.getJob(row.job_id)!;
+    if (current.sidecar_state === "job_ready" && current.job_ready_outcome === "ready_with_warnings" && current.summary_expected === 1) {
+      return;
+    }
+    if (current.summary_expected === 0) return;
+    let settings: ScriberrSummarySettings;
+    try {
+      settings = await this.api.getSummarySettings();
+    } catch (error) {
+      const unsupported = error instanceof ScriberrApiError && error.status === 404;
+      if (unsupported && !this.config.autogenerateSummary) {
+        this.db.updateJob(row.job_id, { summary_expected: 0 });
+        this.logger.info({ jobId: job.id }, "summary settings unavailable and sidecar generation disabled; transcription is terminal");
+        return;
+      }
+      if (this.config.autogenerateSummary) this.db.updateJob(row.job_id, { summary_expected: 1 });
+      this.transition(this.db.getJob(row.job_id)!, "summary_pending", "summary_pending", job.status, job.title);
+      this.logger.warn(
+        { jobId: job.id, error: this.safeError(error) },
+        "Scriberr auto-summary settings lookup failed; deferring sidecar summary request"
+      );
+      return;
+    }
+
+    const summaryExpected = Boolean(settings.auto_summarize || this.config.autogenerateSummary);
+    this.db.updateJob(row.job_id, { summary_expected: summaryExpected ? 1 : 0 });
+    if (!summaryExpected) {
+      this.logger.info({ jobId: job.id }, "summary generation disabled; transcription is terminal");
       return;
     }
 
@@ -231,21 +268,11 @@ export class SidecarService {
 
     this.transition(current, "summary_pending", "summary_pending", job.status, job.title);
     current = this.db.getJob(row.job_id)!;
-    if (!this.config.autogenerateSummary || current.summary_requested_at) return;
-
-    try {
-      const settings = await this.api.getSummarySettings();
-      if (settings.auto_summarize) {
-        this.logger.debug({ jobId: job.id }, "waiting for Scriberr automatic summary");
-        return;
-      }
-    } catch (error) {
-      this.logger.warn(
-        { jobId: job.id, error: this.safeError(error) },
-        "Scriberr auto-summary settings lookup failed; deferring sidecar summary request"
-      );
+    if (settings.auto_summarize) {
+      this.logger.debug({ jobId: job.id }, "waiting for Scriberr automatic summary");
       return;
     }
+    if (!this.config.autogenerateSummary || current.summary_requested_at) return;
 
     this.startSummaryRequest(current, job);
   }
@@ -272,6 +299,8 @@ export class SidecarService {
         this.transition(failed, "summary_failed", "summary_failed", job.status, job.title);
         this.logger.warn({ jobId: job.id, error: message }, "summary request failed");
         await this.mqtt.flush();
+        await this.syncNotebook(job);
+        await this.markReady(job);
       })
       .finally(() => {
         this.activeSummaryRequests.delete(job.id);
@@ -307,7 +336,7 @@ export class SidecarService {
       if (startedAt) this.metrics.observeDuration("summary", (completedAt - Date.parse(startedAt)) / 1000);
     }
 
-    const inserted = this.db.ensureEvent(row, eventType, {
+    const inserted = Boolean(this.config.mqttUrl) && this.db.ensureEvent(row, eventType, {
       event: eventType,
       job_id: row.job_id,
       title: title ?? null,
@@ -322,8 +351,11 @@ export class SidecarService {
       jobId: row.job_id,
       attempt: row.attempt,
       eventType,
-      queued: inserted
-    }, inserted ? "MQTT event queued" : "MQTT event already queued");
+      queued: inserted,
+      mqttEnabled: Boolean(this.config.mqttUrl)
+    }, !this.config.mqttUrl
+      ? "MQTT event skipped because MQTT is disabled"
+      : inserted ? "MQTT event queued" : "MQTT event already queued");
   }
 
   private safeError(error: unknown): string {
@@ -358,5 +390,41 @@ export class SidecarService {
     await this.mqtt.flush();
     const current = this.db.getJob(job.id);
     if (current) await this.notebook.sync(job, current);
+  }
+
+  private async markReady(job: ScriberrJob): Promise<void> {
+    const row = this.db.getJob(job.id);
+    if (!row || row.job_ready_suppressed === 1 || row.sidecar_state === "transcription_failed" || row.summary_expected === null) return;
+    const summaryExpected = row.summary_expected === 1;
+    if (summaryExpected && !["summary_complete", "summary_failed", "job_ready"].includes(row.sidecar_state)) return;
+    if (!summaryExpected && !job.transcript?.trim()) return;
+
+    const notebookReadiness = this.notebook?.readiness(job, row, summaryExpected);
+    if (notebookReadiness && !notebookReadiness.ready) return;
+    const outcome: JobReadyOutcome = notebookReadiness?.warning || row.sidecar_state === "summary_failed"
+      ? "ready_with_warnings"
+      : "ready";
+    const occurredAt = row.job_ready_at ?? new Date().toISOString();
+    const payload: JobReadyPayload = {
+      event: "job_ready",
+      job_id: row.job_id,
+      title: job.title?.trim() || `Scriberr recording ${row.job_id}`,
+      outcome,
+      attempt: row.attempt,
+      notion_url: notebookReadiness?.pageUrl ?? null,
+      scriberr_url: `${this.config.scriberrPublicUrl}/audio/${encodeURIComponent(row.job_id)}`,
+      occurred_at: occurredAt
+    };
+
+    if (this.config.mqttUrl) this.db.ensureEvent(row, "job_ready", payload);
+    this.notifications?.enqueue(row, payload);
+    if (row.sidecar_state !== "job_ready") {
+      this.db.updateJob(row.job_id, {
+        sidecar_state: "job_ready",
+        job_ready_at: occurredAt,
+        job_ready_outcome: outcome
+      });
+      this.logger.info({ jobId: row.job_id, attempt: row.attempt, outcome }, "job is ready");
+    }
   }
 }

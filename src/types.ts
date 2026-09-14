@@ -27,6 +27,7 @@ export type SidecarState =
   | "summary_pending"
   | "summary_processing"
   | "summary_complete"
+  | "job_ready"
   | "transcription_failed"
   | "summary_failed";
 
@@ -45,6 +46,10 @@ export type JobRow = {
   summary_requested_at: string | null;
   summary_started_at: string | null;
   summary_deadline_at: string | null;
+  summary_expected: number | null;
+  job_ready_at: string | null;
+  job_ready_outcome: "ready" | "ready_with_warnings" | null;
+  job_ready_suppressed: number;
   last_error: string | null;
   created_at: string;
   updated_at: string;

@@ -4,7 +4,7 @@ import pino from "pino";
 import type { Config } from "./config.js";
 import { type NotebookPageRow, StateStore } from "./db.js";
 import { sanitizeError } from "./errors.js";
-import type { NotebookOutcome, NotebookPublisher } from "./notebook.js";
+import type { NotebookOutcome, NotebookPublisher, NotebookReadiness } from "./notebook.js";
 import {
   blockText,
   NotionApiError,
@@ -45,6 +45,21 @@ type PageShell = {
 export class NotionPublisher implements NotebookPublisher {
   readonly provider = "notion";
   readonly reconciliationKey = "layout:v3";
+
+  readiness(job: ScriberrJob, row: JobRow, summaryExpected: boolean): NotebookReadiness {
+    const page = this.db.getNotebookPage(job.id, this.provider);
+    if (!page || page.current_attempt !== row.attempt) return { ready: false, warning: false };
+    const title = this.title(job, row);
+    const statusHash = hash(`${title}\n${job.status}\n${row.sidecar_state}\n${row.attempt}\n${row.last_error ?? ""}`);
+    const audioReady = page.audio_state === "attached" || page.audio_state === "skipped";
+    const transcriptReady = Boolean(page.transcript_hash);
+    const summaryReady = !summaryExpected || Boolean(page.summary_hash);
+    return {
+      ready: audioReady && transcriptReady && summaryReady && page.last_status === statusHash && page.last_title === title,
+      warning: page.audio_state === "skipped" || row.sidecar_state === "summary_failed",
+      pageUrl: page.page_url
+    };
+  }
   readonly parentPageId: string;
 
   constructor(

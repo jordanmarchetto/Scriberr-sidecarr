@@ -94,17 +94,17 @@ test("webhook signal is API-confirmed and published once through the MQTT bounda
 
     const accepted = await fetch(url, { method: "POST", headers, body });
     assert.equal(accepted.status, 202);
-    await waitFor(() => db.pendingWebhookSignalCount() === 0 && publisher.published.length === 3);
+    await waitFor(() => db.pendingWebhookSignalCount() === 0 && publisher.published.length === 4);
 
     assert.deepEqual(
       publisher.published.map((event) => event.event_type),
-      ["job_found", "transcription_complete", "summary_complete"]
+      ["job_found", "transcription_complete", "summary_complete", "job_ready"]
     );
 
     const duplicate = await fetch(url, { method: "POST", headers, body });
     assert.equal(duplicate.status, 202);
     await new Promise((resolve) => setTimeout(resolve, 10));
-    assert.equal(publisher.published.length, 3);
+    assert.equal(publisher.published.length, 4);
   } finally {
     await receiver.close();
     db.close();

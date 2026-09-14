@@ -12,6 +12,7 @@ import type {
 } from "./types.js";
 
 const webhookManagementTimeoutMs = 10_000;
+const availabilityTimeoutMs = 5_000;
 
 export class ScriberrApiError extends Error {
   constructor(public readonly status: number, message: string) {
@@ -48,6 +49,19 @@ export class ScriberrApi {
       await this.throwResponse(response);
     }
     return response;
+  }
+
+  async isAvailable(): Promise<boolean> {
+    try {
+      const response = await fetch(`${this.config.scriberrUrl}/health`, {
+        headers: { Accept: "application/json" },
+        signal: AbortSignal.timeout(Math.min(this.config.apiTimeoutMs, availabilityTimeoutMs))
+      });
+      await response.body?.cancel();
+      return response.ok || [401, 403, 404, 405].includes(response.status);
+    } catch {
+      return false;
+    }
   }
 
   async listWebhooks(): Promise<ScriberrWebhook[]> {

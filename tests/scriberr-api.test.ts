@@ -92,3 +92,39 @@ test("does not retry permanent Scriberr client errors", async () => {
     await close(server);
   }
 });
+
+test("availability check treats a missing health route as reachable Scriberr", async () => {
+  const server = createServer((_request, response) => {
+    response.writeHead(404);
+    response.end();
+  });
+
+  try {
+    const url = await listen(server);
+    const api = new ScriberrApi(loadConfig({
+      SIDECARR_SCRIBERR_URL: url,
+      SIDECARR_SCRIBERR_API_KEY: "api-key"
+    }));
+    assert.equal(await api.isAvailable(), true);
+  } finally {
+    await close(server);
+  }
+});
+
+test("availability check reports an unreachable Scriberr without API retries", async () => {
+  const server = createServer((_request, response) => {
+    response.writeHead(503);
+    response.end();
+  });
+
+  try {
+    const url = await listen(server);
+    const api = new ScriberrApi(loadConfig({
+      SIDECARR_SCRIBERR_URL: url,
+      SIDECARR_SCRIBERR_API_KEY: "api-key"
+    }));
+    assert.equal(await api.isAvailable(), false);
+  } finally {
+    await close(server);
+  }
+});
