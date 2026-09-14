@@ -22,6 +22,8 @@ docker compose logs -f scriberr-sidecarr
 
 The default `LOG_LEVEL=info` records startup configuration, discovery changes, job transitions, retries, and failures. Temporarily use `LOG_LEVEL=debug` for accepted webhooks, queued events, and successful MQTT publications.
 
+Repeated connection-level retry warnings are limited to one per minute during an outage. Distinct HTTP failures remain visible.
+
 Logs contain identifiers and state metadata, but not configured credentials, transcript or summary text, or audio.
 
 ## Releases

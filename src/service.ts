@@ -6,6 +6,7 @@ import { StateStore } from "./db.js";
 import { sanitizeError } from "./errors.js";
 import { Metrics } from "./metrics.js";
 import { MqttPublisher } from "./mqtt-publisher.js";
+import type { JobReconciliation } from "./job-reconciliation.js";
 import { NotebookService } from "./notebook-service.js";
 import { NotificationService, type JobReadyOutcome, type JobReadyPayload } from "./notification-service.js";
 import { ScriberrApi, ScriberrApiError } from "./scriberr-api.js";
@@ -33,7 +34,8 @@ export class SidecarService {
     private readonly logger: pino.Logger,
     private readonly metrics = new Metrics(),
     private readonly notebook?: NotebookService,
-    private readonly notifications?: NotificationService
+    private readonly notifications?: NotificationService,
+    private readonly jobReconciliation?: JobReconciliation
   ) {}
 
   setFilesystemDiscoveryEnabled(enabled: boolean): void {
@@ -55,6 +57,12 @@ export class SidecarService {
     try {
       do {
         this.cycleQueued = false;
+        const reconciledJobs = await this.jobReconciliation?.reconcile() ?? [];
+        const reconciledJobIds = new Set(reconciledJobs.map((job) => job.id));
+        const reconciledAt = new Date().toISOString();
+        for (const job of reconciledJobs) {
+          this.discoverJob(job.id, "", reconciledAt, "scriberr_api", job.title ?? null);
+        }
         if (this.filesystemDiscoveryEnabled) await this.scan();
         const signals = this.db.pendingWebhookSignals();
         const signalsByJob = new Map<string, WebhookSignalRow[]>();
@@ -62,20 +70,16 @@ export class SidecarService {
           const jobSignals = signalsByJob.get(signal.job_id) ?? [];
           jobSignals.push(signal);
           signalsByJob.set(signal.job_id, jobSignals);
-          const result = this.db.discover(signal.job_id, "", signal.received_at, "webhook");
-          if (result.inserted) {
-            this.emit(result.job, "job_found", "discovered", "discovered", null);
-            this.logger.info({ jobId: signal.job_id, source: "webhook" }, "job discovered");
-            this.metrics.incrementDiscovered("webhook");
-          }
+          this.discoverJob(signal.job_id, "", signal.received_at, "webhook");
         }
         const jobs = this.db.listJobs();
         const signaled = jobs.filter((job) => {
           const jobSignals = signalsByJob.get(job.job_id) ?? [];
-          return jobSignals.length > 0 && this.shouldPoll(job, jobSignals);
+          return reconciledJobIds.has(job.job_id)
+            || (jobSignals.length > 0 && this.shouldPoll(job, jobSignals));
         });
         const background = jobs
-          .filter((job) => !signalsByJob.has(job.job_id) && this.shouldPoll(job))
+          .filter((job) => !signalsByJob.has(job.job_id) && !reconciledJobIds.has(job.job_id) && this.shouldPoll(job))
           .sort((left, right) => this.pollPriority(left) - this.pollPriority(right))
           .slice(0, backgroundPollLimit);
         this.logger.debug({
@@ -113,13 +117,16 @@ export class SidecarService {
     for (const entry of entries) {
       if (!entry.isDirectory() || !jobIdPattern.test(entry.name)) continue;
       const folder = path.join(this.config.watchFolder, entry.name);
-      const result = this.db.discover(entry.name, folder, now);
-      if (result.inserted) {
-        this.emit(result.job, "job_found", "discovered", "discovered", null);
-        this.logger.info({ jobId: entry.name, source: "filesystem" }, "job discovered");
-        this.metrics.incrementDiscovered("filesystem");
-      }
+      this.discoverJob(entry.name, folder, now, "filesystem");
     }
+  }
+
+  private discoverJob(jobId: string, folder: string, now: string, source: string, title: string | null = null): void {
+    const result = this.db.discover(jobId, folder, now, source);
+    if (!result.inserted) return;
+    this.emit(result.job, "job_found", "discovered", "discovered", title);
+    this.logger.info({ jobId, source }, "job discovered");
+    this.metrics.incrementDiscovered(source);
   }
 
   private async poll(previous: JobRow, signals: WebhookSignalRow[] = []): Promise<boolean> {
@@ -143,7 +150,7 @@ export class SidecarService {
     }
 
     let current = this.db.getJob(previous.job_id)!;
-    if (current.scriberr_status === "failed" && ["uploaded", "pending", "processing"].includes(job.status)) {
+    if (terminalStates.has(current.sidecar_state) && ["uploaded", "pending", "processing"].includes(job.status)) {
       current = this.db.startNewAttempt(previous.job_id, checkedAt);
       this.logger.info({ jobId: previous.job_id, attempt: current.attempt }, "Scriberr job rerun detected");
     }

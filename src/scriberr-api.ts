@@ -4,6 +4,7 @@ import { sanitizeError } from "./errors.js";
 import { Metrics } from "./metrics.js";
 import type {
   ScriberrJob,
+  ScriberrJobListResponse,
   ScriberrSummary,
   ScriberrSummarySettings,
   ScriberrSummaryTemplate,
@@ -13,6 +14,7 @@ import type {
 
 const webhookManagementTimeoutMs = 10_000;
 const availabilityTimeoutMs = 5_000;
+const connectionRetryLogIntervalMs = 60_000;
 
 export class ScriberrApiError extends Error {
   constructor(public readonly status: number, message: string) {
@@ -23,6 +25,7 @@ export class ScriberrApiError extends Error {
 
 export class ScriberrApi {
   private summaryModel: string | undefined;
+  private lastConnectionRetryLogAt = 0;
 
   constructor(
     private readonly config: Config,
@@ -32,6 +35,17 @@ export class ScriberrApi {
 
   async getJob(jobId: string): Promise<ScriberrJob> {
     return this.request<ScriberrJob>(`/api/v1/transcription/${encodeURIComponent(jobId)}`);
+  }
+
+  async listJobsUpdatedAfter(updatedAfter: string): Promise<ScriberrJobListResponse> {
+    const query = new URLSearchParams({
+      page: "1",
+      limit: "20",
+      sort_by: "updated_at",
+      sort_order: "asc",
+      updated_after: updatedAfter
+    });
+    return this.request<ScriberrJobListResponse>(`/api/v1/transcription/list?${query.toString()}`);
   }
 
   async getSummary(jobId: string): Promise<ScriberrSummary> {
@@ -151,6 +165,7 @@ export class ScriberrApi {
       try {
         const response = await this.fetch(path, init, timeoutMs);
         if (response.ok) {
+          this.lastConnectionRetryLogAt = 0;
           if (attempt > 1) {
             this.logger?.info(
               { method: init.method ?? "GET", path, attempt },
@@ -195,6 +210,11 @@ export class ScriberrApi {
     delayMs: number,
     failure: { status: number } | { error: string }
   ): void {
+    if ("error" in failure) {
+      const now = Date.now();
+      if (now - this.lastConnectionRetryLogAt < connectionRetryLogIntervalMs) return;
+      this.lastConnectionRetryLogAt = now;
+    }
     this.logger?.warn({
       method: init.method ?? "GET",
       path,

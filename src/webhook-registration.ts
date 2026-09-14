@@ -1,4 +1,4 @@
-import { randomBytes } from "node:crypto";
+import { createHash, randomBytes } from "node:crypto";
 import pino from "pino";
 import type { Config } from "./config.js";
 import { StateStore } from "./db.js";
@@ -8,6 +8,7 @@ import type { ScriberrWebhook, ScriberrWebhookEvent, ScriberrWebhookInput } from
 
 const webhookIdSetting = "managed_webhook_id";
 const webhookSecretSetting = "managed_webhook_secret";
+const webhookFingerprintSetting = "managed_webhook_fingerprint";
 const webhookName = "Scriberr Sidecarr";
 const reconciliationIntervalMs = 5 * 60 * 1000;
 const events: ScriberrWebhookEvent[] = [
@@ -87,13 +88,24 @@ export class WebhookRegistration {
       enabled: true,
       secret: this.secret ?? ""
     };
+    const fingerprint = createHash("sha256").update(JSON.stringify(input)).digest("hex");
+    const matches = hook
+      && hook.name === input.name
+      && hook.url === input.url
+      && hook.enabled === input.enabled
+      && hook.has_secret
+      && [...hook.events].sort().join("\n") === [...input.events].sort().join("\n")
+      && this.db.getSetting(webhookFingerprintSetting) === fingerprint;
 
     try {
-      const action = hook ? "updated" : "created";
-      const managed = hook
-        ? await this.api.updateWebhook(hook.id, input)
-        : await this.api.createWebhook(input);
+      const action = !hook ? "created" : matches ? "verified" : "updated";
+      const managed = !hook
+        ? await this.api.createWebhook(input)
+        : matches
+          ? hook
+          : await this.api.updateWebhook(hook.id, input);
       this.db.setSetting(webhookIdSetting, managed.id);
+      this.db.setSetting(webhookFingerprintSetting, fingerprint);
       if (!this.active) {
         this.logger.info(
           { webhookId: managed.id },

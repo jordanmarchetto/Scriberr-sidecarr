@@ -20,6 +20,7 @@ const configSchema = z.object({
   SIDECARR_DISCOVERY_MODE: z.enum(["webhook", "filesystem"]).default("webhook"),
   SIDECARR_WATCH_FOLDER: z.string().default("/watch/transcripts"),
   SIDECARR_SCAN_INTERVAL_SECONDS: z.coerce.number().int().positive().default(30),
+  SIDECARR_RECONCILIATION_INTERVAL_SECONDS: z.coerce.number().int().positive().default(300),
   SIDECARR_SCRIBERR_URL: z.string().url(),
   SIDECARR_SCRIBERR_PUBLIC_URL: z.string().url().optional(),
   SIDECARR_SCRIBERR_API_KEY: z.string().min(1),
@@ -100,6 +101,7 @@ export type Config = {
   discoveryMode: "webhook" | "filesystem";
   watchFolder: string;
   scanIntervalMs: number;
+  reconciliationIntervalMs: number;
   scriberrUrl: string;
   scriberrPublicUrl: string;
   scriberrApiKey: string;
@@ -141,6 +143,7 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): Config {
     discoveryMode: parsed.SIDECARR_DISCOVERY_MODE,
     watchFolder: parsed.SIDECARR_WATCH_FOLDER,
     scanIntervalMs: parsed.SIDECARR_SCAN_INTERVAL_SECONDS * 1000,
+    reconciliationIntervalMs: parsed.SIDECARR_RECONCILIATION_INTERVAL_SECONDS * 1000,
     scriberrUrl: parsed.SIDECARR_SCRIBERR_URL.replace(/\/$/, ""),
     scriberrPublicUrl: (parsed.SIDECARR_SCRIBERR_PUBLIC_URL ?? parsed.SIDECARR_SCRIBERR_URL).replace(/\/$/, ""),
     scriberrApiKey: parsed.SIDECARR_SCRIBERR_API_KEY,
