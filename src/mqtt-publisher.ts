@@ -7,7 +7,7 @@ import pino from "pino";
 import { Metrics } from "./metrics.js";
 
 export class MqttPublisher {
-  private readonly client: MqttClient;
+  private readonly client?: MqttClient;
   private connected = false;
   private reconnectAttempt = 0;
   private closing = false;
@@ -18,6 +18,10 @@ export class MqttPublisher {
     private readonly logger: pino.Logger,
     private readonly metrics = new Metrics()
   ) {
+    if (!config.mqttUrl) {
+      this.logger.info("mqtt publishing disabled");
+      return;
+    }
     this.client = mqtt.connect(config.mqttUrl, {
       username: config.mqttUsername,
       password: config.mqttPassword,
@@ -44,6 +48,7 @@ export class MqttPublisher {
   }
 
   async flush(): Promise<void> {
+    if (!this.client) return;
     for (const event of this.db.pendingEvents()) {
       try {
         await this.publish(event);
@@ -75,14 +80,16 @@ export class MqttPublisher {
 
   close(): void {
     this.closing = true;
-    this.client.end(true);
+    this.client?.end(true);
   }
 
   private async publish(event: PendingEvent): Promise<void> {
+    const client = this.client;
+    if (!client) return;
     await this.waitForConnection();
     const topic = this.topic(event);
     await new Promise<void>((resolve, reject) => {
-      this.client.publish(topic, event.payload_json, {
+      client.publish(topic, event.payload_json, {
         qos: this.config.mqttQos,
         retain: this.config.mqttRetain
       }, (error) => error ? reject(error) : resolve());
@@ -95,7 +102,7 @@ export class MqttPublisher {
 
   private safeEndpoint(): string {
     try {
-      const url = new URL(this.config.mqttUrl);
+      const url = new URL(this.config.mqttUrl ?? "");
       return `${url.protocol}//${url.hostname}${url.port ? `:${url.port}` : ""}`;
     } catch {
       return "invalid endpoint";
@@ -103,6 +110,8 @@ export class MqttPublisher {
   }
 
   private async waitForConnection(): Promise<void> {
+    const client = this.client;
+    if (!client) return;
     if (this.connected) return;
     await new Promise<void>((resolve, reject) => {
       const timeout = setTimeout(() => {
@@ -113,11 +122,11 @@ export class MqttPublisher {
       const onError = (error: Error) => { cleanup(); reject(error); };
       const cleanup = () => {
         clearTimeout(timeout);
-        this.client.off("connect", onConnect);
-        this.client.off("error", onError);
+        client.off("connect", onConnect);
+        client.off("error", onError);
       };
-      this.client.once("connect", onConnect);
-      this.client.once("error", onError);
+      client.once("connect", onConnect);
+      client.once("error", onError);
     });
   }
 }

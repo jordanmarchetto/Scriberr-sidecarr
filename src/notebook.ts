@@ -23,8 +23,15 @@ export type NotebookOutcome = {
   error?: string;
 };
 
+export type NotebookReadiness = {
+  ready: boolean;
+  warning: boolean;
+  pageUrl?: string;
+};
+
 export interface NotebookPublisher {
   readonly provider: string;
   readonly reconciliationKey?: string;
   sync(job: ScriberrJob, row: JobRow): Promise<NotebookOutcome[]>;
+  readiness(job: ScriberrJob, row: JobRow, summaryExpected: boolean): NotebookReadiness;
 }

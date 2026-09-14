@@ -2,7 +2,7 @@ import pino from "pino";
 import type { Config } from "./config.js";
 import { StateStore } from "./db.js";
 import { sanitizeError } from "./errors.js";
-import type { NotebookOutcome, NotebookPublisher } from "./notebook.js";
+import type { NotebookOutcome, NotebookPublisher, NotebookReadiness } from "./notebook.js";
 import type { JobRow, ScriberrJob } from "./types.js";
 
 const enabledAtSetting = "notebook_enabled_at";
@@ -49,9 +49,13 @@ export class NotebookService {
     return !this.db.getNotebookOperation(jobId, this.publisher.provider, key);
   }
 
+  readiness(job: ScriberrJob, row: JobRow, summaryExpected: boolean): NotebookReadiness {
+    return this.publisher.readiness(job, row, summaryExpected);
+  }
+
   private emit(row: JobRow, outcome: NotebookOutcome): void {
     const occurredAt = new Date().toISOString();
-    const queued = this.db.ensureEventWithKey(row, outcome.event, `${row.attempt}:${outcome.occurrenceKey}`, {
+    const queued = Boolean(this.config.mqttUrl) && this.db.ensureEventWithKey(row, outcome.event, `${row.attempt}:${outcome.occurrenceKey}`, {
       event: outcome.event,
       provider: this.publisher.provider,
       job_id: row.job_id,
@@ -67,7 +71,10 @@ export class NotebookService {
       provider: this.publisher.provider,
       operation: outcome.operation,
       eventType: outcome.event,
-      queued
-    }, queued ? "notebook MQTT event queued" : "notebook MQTT event already queued");
+      queued,
+      mqttEnabled: Boolean(this.config.mqttUrl)
+    }, !this.config.mqttUrl
+      ? "notebook MQTT event skipped because MQTT is disabled"
+      : queued ? "notebook MQTT event queued" : "notebook MQTT event already queued");
   }
 }

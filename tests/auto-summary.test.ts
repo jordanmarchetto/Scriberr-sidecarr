@@ -130,7 +130,7 @@ test("discovers a completed summary through API polling without a webhook", asyn
   try {
     await value.service.runCycle();
 
-    assert.equal(value.db.getJob(jobId)?.sidecar_state, "summary_complete");
+    assert.equal(value.db.getJob(jobId)?.sidecar_state, "job_ready");
     assert.ok(value.db.pendingEvents().some((event) => event.event_type === "summary_complete"));
   } finally {
     cleanup(value);
@@ -163,7 +163,8 @@ test("records a sanitized failure when background summary generation fails", asy
     await value.service.runCycle();
     await new Promise<void>((resolve) => setImmediate(resolve));
 
-    assert.equal(value.db.getJob(jobId)?.sidecar_state, "summary_failed");
+    assert.equal(value.db.getJob(jobId)?.sidecar_state, "job_ready");
+    assert.equal(value.db.getJob(jobId)?.job_ready_outcome, "ready_with_warnings");
     const failed = value.db.pendingEvents().find((event) => event.event_type === "summary_failed");
     assert.ok(failed);
     const payload = JSON.parse(failed.payload_json) as { error?: string };
