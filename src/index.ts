@@ -1,6 +1,8 @@
 import pino from "pino";
-import { loadConfig } from "./config.js";
+import { loadBootstrapConfig } from "./config.js";
+import { ConfigurationManager } from "./configuration-manager.js";
 import { StateStore } from "./db.js";
+import { sanitizeError } from "./errors.js";
 import { MqttPublisher } from "./mqtt-publisher.js";
 import { Metrics } from "./metrics.js";
 import { ScriberrJobReconciler } from "./job-reconciliation.js";
@@ -13,7 +15,8 @@ import { SidecarService } from "./service.js";
 import { WebhookReceiver } from "./webhook-receiver.js";
 import { WebhookRegistration } from "./webhook-registration.js";
 
-const logger = pino({ level: process.env.LOG_LEVEL ?? "info" });
+const bootstrap = loadBootstrapConfig();
+const logger = pino({ level: bootstrap.logLevel });
 
 function safeEndpoint(value?: string): string {
   if (!value) return "disabled";
@@ -26,7 +29,12 @@ function safeEndpoint(value?: string): string {
 }
 
 try {
-  const config = loadConfig();
+  const db = new StateStore(bootstrap.dbPath);
+  const configuration = new ConfigurationManager(process.env, db);
+  const { config } = configuration.current;
+  for (const issue of configuration.current.issues) {
+    logger.warn({ setting: issue.env, group: issue.group, source: issue.source, error: issue.message }, "configuration setting is unavailable");
+  }
   logger.info({
     discoveryMode: config.discoveryMode,
     scriberrEndpoint: safeEndpoint(config.scriberrUrl),
@@ -47,18 +55,41 @@ try {
     smtpEndpoint: safeEndpoint(config.smtpUrl)
   }, "configuration loaded");
   const metrics = new Metrics();
-  const db = new StateStore(config.dbPath);
   logger.info({ dbPath: config.dbPath }, "state database opened");
   const api = new ScriberrApi(config, metrics, logger);
   const readiness = new ScriberrReadinessGate(api, logger);
   const registration = new WebhookRegistration(config, db, api, logger);
   const jobReconciliation = new ScriberrJobReconciler(config, db, api, logger);
   const runtimeConfig = { ...config, webhookSecret: registration.secret };
-  const mqtt = new MqttPublisher(runtimeConfig, db, logger, metrics);
-  const notifications = new NotificationService(runtimeConfig, db, logger);
-  const notion = runtimeConfig.notebookProvider === "notion"
-    ? new NotionPublisher(runtimeConfig, db, api, logger)
-    : undefined;
+  let mqtt: MqttPublisher;
+  try {
+    mqtt = new MqttPublisher(runtimeConfig, db, logger, metrics);
+  } catch (error) {
+    logger.error({ integration: "mqtt", error: sanitizeError(error) }, "optional integration failed to initialize; integration is disabled");
+    mqtt = new MqttPublisher({ ...runtimeConfig, mqttUrl: undefined, mqttUsername: undefined, mqttPassword: undefined }, db, logger, metrics);
+  }
+  let notifications: NotificationService;
+  try {
+    notifications = new NotificationService(runtimeConfig, db, logger);
+  } catch (error) {
+    logger.error({ integration: "notifications", error: sanitizeError(error) }, "optional integration failed to initialize; integration is disabled");
+    notifications = new NotificationService({
+      ...runtimeConfig,
+      notificationWebhookUrl: undefined,
+      notificationWebhookToken: undefined,
+      smtpUrl: undefined,
+      emailFrom: undefined,
+      emailTo: undefined
+    }, db, logger);
+  }
+  let notion: NotionPublisher | undefined;
+  if (runtimeConfig.notebookProvider === "notion") {
+    try {
+      notion = new NotionPublisher(runtimeConfig, db, api, logger);
+    } catch (error) {
+      logger.error({ integration: "notion", error: sanitizeError(error) }, "optional integration failed to initialize; integration is disabled");
+    }
+  }
   if (notion) {
     logger.info({ provider: notion.provider, parentPageId: notion.parentPageId }, "notebook destination enabled");
   }
@@ -76,18 +107,21 @@ try {
   );
   let interval: NodeJS.Timeout | undefined;
 
-  const runCycle = () => readiness.run(async () => {
-    const webhookActive = await registration.reconcile();
-    service.setFilesystemDiscoveryEnabled(!webhookActive);
-    await service.runCycle();
-  });
+  const runCycle = async () => {
+    if (!configuration.current.canProcess) return false;
+    return readiness.run(async () => {
+      const webhookActive = await registration.reconcile();
+      service.setFilesystemDiscoveryEnabled(!webhookActive);
+      await service.runCycle();
+    });
+  };
   const receiver = new WebhookReceiver(
     runtimeConfig,
     db,
     async () => { await runCycle(); },
     logger,
     metrics,
-    () => readiness.status
+    () => configuration.current.canProcess ? readiness.status : "configuration_required"
   );
 
   let shuttingDown = false;
@@ -99,6 +133,7 @@ try {
     await receiver.close();
     mqtt.close();
     notifications.close();
+    configuration.close();
     db.close();
     logger.info("shutdown complete");
     process.exit(0);
@@ -107,6 +142,9 @@ try {
   process.once("SIGINT", () => void shutdown());
 
   await receiver.listen();
+  if (!configuration.current.canProcess) {
+    logger.warn("Scriberr background processing is paused until required configuration is provided");
+  }
   await runCycle();
   interval = setInterval(
     () => runCycle().catch((error) => logger.error({ err: error }, "cycle failed")),
