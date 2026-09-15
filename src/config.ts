@@ -45,6 +45,7 @@ export const settingRegistry = [
   { key: "webhookHost", env: "SIDECARR_WEBHOOK_HOST", group: "runtime", parser: requiredString, defaultValue: "0.0.0.0", uiManageable: false, activation: "bootstrap" },
   { key: "webhookPort", env: "SIDECARR_WEBHOOK_PORT", group: "runtime", parser: integer(1, 65535), defaultValue: "8080", uiManageable: false, activation: "bootstrap" },
   { key: "webhookPath", env: "SIDECARR_WEBHOOK_PATH", group: "runtime", parser: z.string().startsWith("/"), defaultValue: "/webhooks/scriberr", uiManageable: false, activation: "bootstrap" },
+  { key: "uiBasePath", env: "SIDECARR_UI_BASE_PATH", group: "runtime", parser: z.string().regex(/^\/[a-zA-Z0-9/_-]*$/, "must be an absolute URL path"), defaultValue: "/sidecarr", uiManageable: false, activation: "bootstrap" },
   { key: "webhookCallbackUrl", env: "SIDECARR_WEBHOOK_CALLBACK_URL", group: "runtime", parser: optionalUrl, uiManageable: false, advanced: true, activation: "bootstrap" },
   { key: "watchFolder", env: "SIDECARR_WATCH_FOLDER", group: "runtime", parser: requiredString, defaultValue: "/watch/transcripts", uiManageable: false, activation: "bootstrap" },
   { key: "scriberrUrl", env: "SIDECARR_SCRIBERR_URL", group: "scriberr", parser: url, defaultValue: "http://scriberr:8080", uiManageable: true, activation: "scriberr" },
@@ -124,6 +125,7 @@ export type Config = {
   webhookHost: string;
   webhookPort: number;
   webhookPath: string;
+  uiBasePath: string;
   webhookCallbackUrl: string;
   webhookSecret?: string;
   notebookProvider?: "notion";
@@ -312,6 +314,7 @@ export function resolveConfig(env: NodeJS.ProcessEnv = process.env, reader?: Set
     summaryPollIntervalMs: numberValue(settings, "summaryPollIntervalSeconds", 30) * 1000,
     summaryTimeoutMs: numberValue(settings, "summaryTimeoutSeconds", 3600) * 1000,
     webhookHost: stringValue(settings, "webhookHost", "0.0.0.0"), webhookPort, webhookPath,
+    uiBasePath: `/${stringValue(settings, "uiBasePath", "/sidecarr").replace(/^\/+|\/+$/g, "")}`,
     webhookCallbackUrl: optionalValue(settings, "webhookCallbackUrl") ?? `http://scriberr-sidecarr:${webhookPort}${webhookPath}`,
     webhookSecret: optionalValue(settings, "webhookSecret"),
     notebookProvider: notebookProvider === "notion" ? "notion" : undefined,
@@ -332,9 +335,16 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): Config {
   return resolution.config;
 }
 
-export function loadBootstrapConfig(env: NodeJS.ProcessEnv = process.env): Pick<Config, "logLevel" | "dbPath" | "webhookHost" | "webhookPort" | "webhookPath"> {
+export function loadBootstrapConfig(env: NodeJS.ProcessEnv = process.env): Pick<Config, "logLevel" | "dbPath" | "webhookHost" | "webhookPort" | "webhookPath" | "uiBasePath"> {
   const config = resolveConfig(env).config;
-  return { logLevel: config.logLevel, dbPath: config.dbPath, webhookHost: config.webhookHost, webhookPort: config.webhookPort, webhookPath: config.webhookPath };
+  return {
+    logLevel: config.logLevel,
+    dbPath: config.dbPath,
+    webhookHost: config.webhookHost,
+    webhookPort: config.webhookPort,
+    webhookPath: config.webhookPath,
+    uiBasePath: config.uiBasePath
+  };
 }
 
 export function safeSettingsSnapshot(resolution: ConfigurationResolution): readonly SafeResolvedSetting[] {

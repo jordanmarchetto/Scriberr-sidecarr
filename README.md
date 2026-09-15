@@ -21,6 +21,8 @@ With unmodified Scriberr, it watches the transcript directory, polls the Scriber
 
 In both modes, SQLite prevents duplicate work across restarts. MQTT, Notion, email, and outbound webhooks are all optional.
 
+Sidecarr also provides an optional responsive UI at `/sidecarr`. It uses your existing Scriberr login and does not introduce another user account. See [Sidecarr UI](docs/ui.md) for the required reverse-proxy route.
+
 ## Quick start
 
 Sidecarr and Scriberr must share a Docker network. They may be in the same Compose project or separate projects on the same external network.
@@ -78,6 +80,7 @@ Omit a destination's settings to disable it. See [.env.sample](.env.sample) for 
 - [Notion](docs/notion.md)
 - [Events and job-ready notifications](docs/notifications.md)
 - [Operations, releases, and troubleshooting](docs/operations.md)
+- [Sidecarr UI and reverse-proxy setup](docs/ui.md)
 
 ## Development
 

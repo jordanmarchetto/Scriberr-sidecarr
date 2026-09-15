@@ -3,4 +3,5 @@ CONTEXT.md
 data/
 node_modules/
 dist/
+ui-dist/
 scratch/
