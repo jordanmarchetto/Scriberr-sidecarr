@@ -2,6 +2,10 @@
 
 Start with [.env.sample](../.env.sample). This page explains the settings that usually need context.
 
+Sidecarr currently continues to use `.env` as its user-facing configuration interface. Internally, settings now resolve per field as `environment > Sidecarr database > built-in default` in preparation for the optional UI. Environment values always win and are never copied into SQLite. Until the settings UI is released, do not edit the `application_settings` table manually.
+
+Missing Scriberr credentials leave `/health` available and pause background processing instead of terminating the container. An incomplete optional MQTT, Notion, SMTP, or notification-webhook section disables that integration and logs the affected environment-variable names without logging secret values.
+
 ## Scriberr connection
 
 `SIDECARR_SCRIBERR_URL` is the Docker-internal API address. `SIDECARR_SCRIBERR_PUBLIC_URL` is the browser-facing base URL used in links. The API key is sent to Scriberr as `X-API-Key`.

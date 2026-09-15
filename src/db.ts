@@ -1,4 +1,5 @@
 import Database from "better-sqlite3";
+import { chmodSync } from "node:fs";
 import { sanitizeError } from "./errors.js";
 import type { JobRow, ScriberrWebhookPayload, SidecarState, WebhookSignalRow } from "./types.js";
 
@@ -80,6 +81,7 @@ export class StateStore {
 
   constructor(path: string) {
     this.db = new Database(path);
+    if (path !== ":memory:") chmodSync(path, 0o600);
     this.db.pragma("journal_mode = WAL");
     this.db.pragma("busy_timeout = 5000");
     this.db.exec(`
@@ -138,6 +140,12 @@ export class StateStore {
       CREATE TABLE IF NOT EXISTS settings (
         key TEXT PRIMARY KEY,
         value TEXT NOT NULL
+      );
+
+      CREATE TABLE IF NOT EXISTS application_settings (
+        key TEXT PRIMARY KEY,
+        value TEXT NOT NULL,
+        updated_at TEXT NOT NULL
       );
 
       CREATE TABLE IF NOT EXISTS notebook_pages (
@@ -262,6 +270,30 @@ export class StateStore {
       INSERT INTO settings (key, value) VALUES (?, ?)
       ON CONFLICT(key) DO UPDATE SET value = excluded.value
     `).run(key, value);
+  }
+
+  getApplicationSettings(): ReadonlyMap<string, string> {
+    const rows = this.db.prepare("SELECT key, value FROM application_settings").all() as Array<{ key: string; value: string }>;
+    return new Map(rows.map((row) => [row.key, row.value]));
+  }
+
+  setApplicationSettings(values: ReadonlyMap<string, string | undefined>, updatedAt = new Date().toISOString()): void {
+    const upsert = this.db.prepare(`
+      INSERT INTO application_settings (key, value, updated_at) VALUES (?, ?, ?)
+      ON CONFLICT(key) DO UPDATE SET value = excluded.value, updated_at = excluded.updated_at
+    `);
+    const remove = this.db.prepare("DELETE FROM application_settings WHERE key = ?");
+    this.db.transaction(() => {
+      for (const [key, value] of values) {
+        if (value === undefined || value.trim() === "") remove.run(key);
+        else upsert.run(key, value, updatedAt);
+      }
+    })();
+  }
+
+  getApplicationSettingUpdatedAt(key: string): string | undefined {
+    const row = this.db.prepare("SELECT updated_at FROM application_settings WHERE key = ?").get(key) as { updated_at: string } | undefined;
+    return row?.updated_at;
   }
 
   discover(jobId: string, folder: string, now: string, source = "filesystem"): { inserted: boolean; job: JobRow } {

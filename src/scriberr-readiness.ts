@@ -1,6 +1,6 @@
 import pino from "pino";
 
-export type ScriberrReadinessStatus = "waiting" | "ready";
+export type ScriberrReadinessStatus = "configuration_required" | "waiting" | "ready";
 
 type AvailabilityCheck = {
   isAvailable(): Promise<boolean>;
