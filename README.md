@@ -58,6 +58,8 @@ docker compose --profile gateway up -d
 
 Then open Scriberr normally at `http://server:8383` and Sidecarr at `http://server:8383/sidecarr`. Both services must use the same Docker network and the Scriberr service must be named `scriberr`.
 
+The gateway wraps Scriberr's service worker so Scriberr keeps its PWA behavior without capturing `/sidecarr`. This is a documented compatibility boundary; see [Sidecarr UI](docs/ui.md).
+
 ## Optional destinations
 
 Enable only the destinations you want in `.env`:

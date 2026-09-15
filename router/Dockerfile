@@ -1,6 +1,7 @@
 FROM caddy:2-alpine
 
 COPY router/Caddyfile /etc/caddy/Caddyfile
+COPY router/sw-wrapper.js /srv/sidecarr-router/sw-wrapper.js
 
 RUN caddy validate --config /etc/caddy/Caddyfile --adapter caddyfile
 

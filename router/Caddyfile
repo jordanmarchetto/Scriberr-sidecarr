@@ -9,6 +9,19 @@
 		format console
 	}
 
+	handle /sw.js {
+		root * /srv/sidecarr-router
+		rewrite * /sw-wrapper.js
+		header Cache-Control "no-cache, no-store, must-revalidate"
+		header Service-Worker-Allowed "/"
+		file_server
+	}
+
+	handle /__scriberr_original_sw.js {
+		rewrite * /sw.js
+		reverse_proxy scriberr:8080
+	}
+
 	handle /__sidecarr_gateway_health {
 		respond "ok" 200
 	}
