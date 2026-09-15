@@ -9,3 +9,11 @@ services:
     volumes:
       - ${SIDECARR_TRANSCRIPTS_HOST_PATH:-/media/holocron/Storage/Backups/voice_recordings/scriberr_data/app_data/transcripts}:/watch/transcripts:ro
       - ${SIDECARR_DATA_HOST_PATH:-./data}:/app/data
+
+  scriberr-router:
+    image: docker.io/jordanmarchetto/scriberr-sidecarr-router:latest
+    restart: unless-stopped
+    profiles:
+      - gateway
+    ports:
+      - "${SCRIBERR_GATEWAY_PORT:-8383}:8080"

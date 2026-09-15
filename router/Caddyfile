@@ -1,0 +1,24 @@
+{
+	admin off
+	auto_https off
+}
+
+:8080 {
+	log {
+		output stdout
+		format console
+	}
+
+	handle /__sidecarr_gateway_health {
+		respond "ok" 200
+	}
+
+	@sidecarr path /sidecarr /sidecarr/*
+	handle @sidecarr {
+		reverse_proxy scriberr-sidecarr:8080
+	}
+
+	handle {
+		reverse_proxy scriberr:8080
+	}
+}
