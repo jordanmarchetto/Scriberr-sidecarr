@@ -32,9 +32,10 @@ export class ConfigurationManager {
     return this.resolutionValue;
   }
 
-  registerActivator(behavior: ActivationBehavior, activator: RuntimeActivator): void {
+  registerActivator(behavior: ActivationBehavior, activator: RuntimeActivator, currentCleanup?: () => void): void {
     if (behavior === "bootstrap") throw new Error("bootstrap settings cannot be activated in-process");
     this.activators.set(behavior, activator);
+    if (currentCleanup) this.cleanups.set(behavior, currentCleanup);
   }
 
   async updateGroup(group: Exclude<SettingGroup, "runtime">, values: ReadonlyMap<SettingKey, string | undefined>): Promise<ConfigurationUpdate> {

@@ -21,6 +21,8 @@ With unmodified Scriberr, it watches the transcript directory, polls the Scriber
 
 In both modes, SQLite prevents duplicate work across restarts. MQTT, Notion, email, and outbound webhooks are all optional.
 
+Sidecarr also provides an optional responsive UI at `/sidecarr`. It uses your existing Scriberr login and does not introduce another user account. The bundled router can put Scriberr and Sidecarr on one port without requiring an existing reverse proxy; see [Sidecarr UI](docs/ui.md).
+
 ## Quick start
 
 Sidecarr and Scriberr must share a Docker network. They may be in the same Compose project or separate projects on the same external network.
@@ -47,6 +49,16 @@ docker compose logs -f scriberr-sidecarr
 ```
 
 The defaults use webhook discovery with automatic filesystem fallback. The transcript directory and SQLite data directory are configured in `docker-compose.yml`.
+
+For direct browser access to both applications on port `8383`, remove Scriberr's host port mapping and start the bundled gateway profile:
+
+```bash
+docker compose --profile gateway up -d
+```
+
+Then open Scriberr normally at `http://server:8383` and Sidecarr at `http://server:8383/sidecarr`. Both services must use the same Docker network and the Scriberr service must be named `scriberr`.
+
+The gateway wraps Scriberr's service worker so Scriberr keeps its PWA behavior without capturing `/sidecarr`. This is a documented compatibility boundary; see [Sidecarr UI](docs/ui.md).
 
 ## Optional destinations
 
@@ -78,6 +90,7 @@ Omit a destination's settings to disable it. See [.env.sample](.env.sample) for 
 - [Notion](docs/notion.md)
 - [Events and job-ready notifications](docs/notifications.md)
 - [Operations, releases, and troubleshooting](docs/operations.md)
+- [Sidecarr UI and gateway setup](docs/ui.md)
 
 ## Development
 
