@@ -50,7 +50,7 @@ docker compose logs -f scriberr-sidecarr
 
 The defaults use webhook discovery with automatic filesystem fallback. The transcript directory and SQLite data directory are configured in `docker-compose.yml`.
 
-For direct browser access to both applications on port `8383`, remove Scriberr's host port mapping and start the bundled gateway profile:
+For direct browser access to both applications on port `8383`, remove Scriberr's host port mapping and enable the optional `scriberr-router` service. Docker Compose profiles are a way to keep optional services disabled until their profile is named explicitly:
 
 ```bash
 docker compose --profile gateway up -d

@@ -14,6 +14,7 @@ type Session = {
 };
 
 const basePath = document.querySelector<HTMLMetaElement>('meta[name="sidecarr-base"]')?.content.replace(/\/$/, "") || "/sidecarr";
+const scriberrLinkHint = "Open Scriberr. You may need to sign in again.";
 
 function pageFromPath(): Page {
   const route = window.location.pathname.slice(basePath.length).replace(/^\/+|\/+$/g, "");
@@ -131,13 +132,13 @@ export function App() {
           <NavButton active={page === "settings"} label="Settings" icon="⚙" onClick={() => navigate("settings")} />
         </nav>
         <div className="sidebar-footer">
-          <a className="nav-button" href={session?.scriberrUrl ?? "/"}><span>↗</span>Open Scriberr</a>
+          <a className="nav-button" href={session?.scriberrUrl ?? "/"} title={scriberrLinkHint}><span>↗</span>Open Scriberr</a>
           <button className="nav-button" onClick={() => setTheme(theme === "dark" ? "light" : "dark")}><span>{theme === "dark" ? "☀" : "☾"}</span>{theme === "dark" ? "Light mode" : "Dark mode"}</button>
           <button className="nav-button" onClick={() => void logout()}><span>⇥</span>Sign out</button>
         </div>
       </aside>
       <main>
-        <header className="mobile-header"><Brand /><div className="header-actions"><a className="icon-button" aria-label="Open Scriberr" href={session?.scriberrUrl ?? "/"}>↗</a><button className="icon-button" aria-label="Toggle theme" onClick={() => setTheme(theme === "dark" ? "light" : "dark")}>{theme === "dark" ? "☀" : "☾"}</button><button className="icon-button" aria-label="Sign out" onClick={() => void logout()}>⇥</button></div></header>
+        <header className="mobile-header"><Brand /><div className="header-actions"><a className="icon-button" aria-label={scriberrLinkHint} title={scriberrLinkHint} href={session?.scriberrUrl ?? "/"}>↗</a><button className="icon-button" aria-label="Toggle theme" onClick={() => setTheme(theme === "dark" ? "light" : "dark")}>{theme === "dark" ? "☀" : "☾"}</button><button className="icon-button" aria-label="Sign out" onClick={() => void logout()}>⇥</button></div></header>
         <div className="content">
           {page === "overview" && <Overview session={session!} token={token!} reload={() => loadSession(token)} />}
           {page === "jobs" && <Placeholder title="Jobs" message="Job history and processing details arrive in the operations checkpoint." />}
@@ -148,7 +149,7 @@ export function App() {
         <NavButton active={page === "overview"} label="Overview" icon="◫" onClick={() => navigate("overview")} />
         <NavButton active={page === "jobs"} label="Jobs" icon="≡" onClick={() => navigate("jobs")} />
         <NavButton active={page === "settings"} label="Settings" icon="⚙" onClick={() => navigate("settings")} />
-        <a className="nav-button" href={session?.scriberrUrl ?? "/"}><span>↗</span>Scriberr</a>
+        <a className="nav-button" href={session?.scriberrUrl ?? "/"} title={scriberrLinkHint}><span>↗</span>Scriberr</a>
       </nav>
     </div>
   );

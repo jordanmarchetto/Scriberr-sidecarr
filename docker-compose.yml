@@ -10,6 +10,8 @@ services:
       - ${SIDECARR_TRANSCRIPTS_HOST_PATH:-/media/holocron/Storage/Backups/voice_recordings/scriberr_data/app_data/transcripts}:/watch/transcripts:ro
       - ${SIDECARR_DATA_HOST_PATH:-./data}:/app/data
 
+  # Optional preconfigured reverse proxy for serving Scriberr and its Sidecarr
+  # UI through one hostname and port. Setup details: docs/ui.md
   scriberr-router:
     image: docker.io/jordanmarchetto/scriberr-sidecarr-router:latest
     restart: unless-stopped
