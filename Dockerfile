@@ -3,8 +3,9 @@ FROM node:22-bookworm-slim AS build
 WORKDIR /app
 COPY package*.json ./
 RUN npm ci
-COPY tsconfig.json ./
+COPY tsconfig.json tsconfig.ui.json vite.config.ts ./
 COPY src ./src
+COPY ui ./ui
 RUN npm run build
 
 FROM node:22-bookworm-slim AS runtime
@@ -14,8 +15,9 @@ WORKDIR /app
 COPY package*.json ./
 RUN npm ci --omit=dev && npm cache clean --force
 COPY --from=build /app/dist ./dist
+COPY --from=build /app/ui-dist ./ui-dist
 
-RUN mkdir -p /app/data /watch/transcripts && chown -R node:node /app
+RUN mkdir -p /app/data /watch/transcripts && chown node:node /app/data /watch/transcripts
 USER node
 
 VOLUME ["/app/data"]

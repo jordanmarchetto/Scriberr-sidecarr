@@ -36,4 +36,10 @@ Pushes to `feature/**` publish a temporary branch image. Slashes become dashes; 
 jordanmarchetto/scriberr-sidecarr:feature-job-ready-notifications
 ```
 
-Use full version tags for production so upgrades are explicit. Before a multi-service rollout, verify that the chosen Scriberr and Sidecarr versions are compatible and confirm deployment ordering with the deployment owner.
+Every publish also produces the same tags for the optional preconfigured gateway image:
+
+```text
+jordanmarchetto/scriberr-sidecarr-router:feature-job-ready-notifications
+```
+
+Use matching full version tags for Sidecarr and its router in production so upgrades are explicit. The router starts independently and tolerates either upstream being unavailable. Before a multi-service rollout, verify that the chosen Scriberr and Sidecarr versions are compatible and confirm deployment ordering with the deployment owner.

@@ -9,6 +9,7 @@ import { sanitizeError } from "./errors.js";
 import { Metrics } from "./metrics.js";
 import type { ScriberrWebhookPayload } from "./types.js";
 import type { ScriberrReadinessStatus } from "./scriberr-readiness.js";
+import type { UiServer } from "./ui-server.js";
 
 const maxBodyBytes = 1024 * 1024;
 
@@ -47,7 +48,8 @@ export class WebhookReceiver {
     private readonly onSignal: () => void | Promise<void>,
     private readonly logger: pino.Logger,
     private readonly metrics = new Metrics(),
-    private readonly scriberrStatus: () => ScriberrReadinessStatus = () => "waiting"
+    private readonly scriberrStatus: () => ScriberrReadinessStatus = () => "waiting",
+    private readonly ui?: UiServer
   ) {
     this.server = createServer((request, response) => {
       void this.handle(request, response);
@@ -94,6 +96,7 @@ export class WebhookReceiver {
         this.respondText(response, 200, this.metrics.render(this.db));
         return;
       }
+      if (this.ui && await this.ui.handle(request, response, url)) return;
       if (url.pathname !== this.config.webhookPath) {
         this.respond(response, 404, { error: "not found" });
         return;

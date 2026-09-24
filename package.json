@@ -4,8 +4,11 @@
   "private": true,
   "type": "module",
   "scripts": {
-    "build": "tsc -p tsconfig.json",
+    "build": "npm run build:server && npm run build:ui",
+    "build:server": "tsc -p tsconfig.json",
+    "build:ui": "vite build",
     "dev": "tsx src/index.ts",
+    "dev:ui": "vite",
     "start": "node dist/index.js",
     "test": "npm run build && node --import tsx --test tests/*.test.ts"
   },
@@ -20,7 +23,13 @@
     "@types/better-sqlite3": "^7.6.12",
     "@types/node": "^22.15.0",
     "@types/nodemailer": "^8.0.1",
+    "@types/react": "^19.3.0",
+    "@types/react-dom": "^19.3.0",
+    "@vitejs/plugin-react": "^6.1.1",
+    "react": "^19.3.0",
+    "react-dom": "^19.3.0",
     "tsx": "^4.19.4",
-    "typescript": "^5.8.3"
+    "typescript": "^5.8.3",
+    "vite": "^8.3.0"
   }
 }

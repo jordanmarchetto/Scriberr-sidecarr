@@ -15,6 +15,7 @@ permissions:
 
 env:
   IMAGE_NAME: jordanmarchetto/scriberr-sidecarr
+  ROUTER_IMAGE_NAME: jordanmarchetto/scriberr-sidecarr-router
 
 jobs:
   test:
@@ -49,9 +50,28 @@ jobs:
             type=semver,pattern={{version}}
             type=semver,pattern={{major}}.{{minor}}
             type=sha
-      - uses: docker/build-push-action@v6
+      - id: router-metadata
+        uses: docker/metadata-action@v5
+        with:
+          images: ${{ env.ROUTER_IMAGE_NAME }}
+          tags: |
+            type=raw,value=latest,enable={{is_default_branch}}
+            type=ref,event=branch,enable=${{ startsWith(github.ref, 'refs/heads/feature/') }}
+            type=semver,pattern={{version}}
+            type=semver,pattern={{major}}.{{minor}}
+            type=sha
+      - name: Build and publish Sidecarr
+        uses: docker/build-push-action@v6
         with:
           context: .
           push: true
           tags: ${{ steps.metadata.outputs.tags }}
           labels: ${{ steps.metadata.outputs.labels }}
+      - name: Build and publish bundled router
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: router/Dockerfile
+          push: true
+          tags: ${{ steps.router-metadata.outputs.tags }}
+          labels: ${{ steps.router-metadata.outputs.labels }}

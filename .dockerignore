@@ -2,6 +2,7 @@
 .git
 node_modules
 dist
+ui-dist
 data
 *.db
 *.db-shm

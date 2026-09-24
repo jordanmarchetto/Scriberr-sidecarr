@@ -1,0 +1,37 @@
+{
+	admin off
+	auto_https off
+}
+
+:8080 {
+	log {
+		output stdout
+		format console
+	}
+
+	handle /sw.js {
+		root * /srv/sidecarr-router
+		rewrite * /sw-wrapper.js
+		header Cache-Control "no-cache, no-store, must-revalidate"
+		header Service-Worker-Allowed "/"
+		file_server
+	}
+
+	handle /__scriberr_original_sw.js {
+		rewrite * /sw.js
+		reverse_proxy scriberr:8080
+	}
+
+	handle /__sidecarr_gateway_health {
+		respond "ok" 200
+	}
+
+	@sidecarr path /sidecarr /sidecarr/*
+	handle @sidecarr {
+		reverse_proxy scriberr-sidecarr:8080
+	}
+
+	handle {
+		reverse_proxy scriberr:8080
+	}
+}
