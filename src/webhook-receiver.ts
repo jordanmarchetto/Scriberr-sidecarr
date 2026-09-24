@@ -43,7 +43,7 @@ export class WebhookReceiver {
   private readonly server: Server;
 
   constructor(
-    private readonly config: Config,
+    private readonly configSource: Config | (() => Config),
     private readonly db: StateStore,
     private readonly onSignal: () => void | Promise<void>,
     private readonly logger: pino.Logger,
@@ -54,6 +54,10 @@ export class WebhookReceiver {
     this.server = createServer((request, response) => {
       void this.handle(request, response);
     });
+  }
+
+  private get config(): Config {
+    return typeof this.configSource === "function" ? this.configSource() : this.configSource;
   }
 
   async listen(port = this.config.webhookPort, host = this.config.webhookHost): Promise<void> {

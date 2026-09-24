@@ -21,7 +21,7 @@ With unmodified Scriberr, it watches the transcript directory, polls the Scriber
 
 In both modes, SQLite prevents duplicate work across restarts. MQTT, Notion, email, and outbound webhooks are all optional.
 
-Sidecarr also provides an optional responsive UI at `/sidecarr`. It uses your existing Scriberr login and does not introduce another user account. The bundled router can put Scriberr and Sidecarr on one port without requiring an existing reverse proxy; see [Sidecarr UI](docs/ui.md).
+Sidecarr also provides an optional responsive UI at `/sidecarr` for setup and behavioral settings. It uses your existing Scriberr login and does not introduce another user account. The bundled router can put Scriberr and Sidecarr on one port without requiring an existing reverse proxy; see [Sidecarr UI](docs/ui.md).
 
 ## Quick start
 

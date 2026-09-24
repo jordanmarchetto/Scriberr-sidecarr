@@ -19,8 +19,8 @@ const payload = {
   occurred_at: "2026-09-11T12:00:00Z"
 };
 
-function signature(body: string): string {
-  return "sha256=" + createHmac("sha256", secret).update(body).digest("hex");
+function signature(body: string, signingSecret = secret): string {
+  return "sha256=" + createHmac("sha256", signingSecret).update(body).digest("hex");
 }
 
 test("receiver verifies, validates, and deduplicates Scriberr deliveries", async () => {
@@ -142,6 +142,46 @@ test("health remains successful while reporting Scriberr readiness", async () =>
     const ready = await fetch(url);
     assert.equal(ready.status, 200);
     assert.deepEqual(await ready.json(), { status: "ok", scriberr: "ready" });
+  } finally {
+    await receiver.close();
+    db.close();
+    rmSync(directory, { recursive: true, force: true });
+  }
+});
+
+test("receiver uses the active runtime webhook secret without restarting its listener", async () => {
+  const directory = mkdtempSync(path.join(tmpdir(), "scriberr-sidecarr-webhook-config-"));
+  const db = new StateStore(path.join(directory, "state.db"));
+  let config = loadConfig({
+    SIDECARR_SCRIBERR_URL: "http://scriberr",
+    SIDECARR_SCRIBERR_API_KEY: "api-key",
+    SIDECARR_WEBHOOK_SECRET: "first-secret"
+  });
+  const receiver = new WebhookReceiver(() => config, db, () => undefined, pino({ level: "silent" }));
+
+  try {
+    await receiver.listen(0, "127.0.0.1");
+    const url = `http://127.0.0.1:${receiver.port()}${config.webhookPath}`;
+    const body = JSON.stringify(payload);
+    config = loadConfig({
+      SIDECARR_SCRIBERR_URL: "http://scriberr",
+      SIDECARR_SCRIBERR_API_KEY: "api-key",
+      SIDECARR_WEBHOOK_SECRET: "replacement-secret"
+    });
+
+    const oldSecret = await fetch(url, {
+      method: "POST",
+      headers: { "Content-Type": "application/json", "X-Scriberr-Delivery": "old-secret", "X-Scriberr-Signature": signature(body, "first-secret") },
+      body
+    });
+    assert.equal(oldSecret.status, 401);
+
+    const replacement = await fetch(url, {
+      method: "POST",
+      headers: { "Content-Type": "application/json", "X-Scriberr-Delivery": "new-secret", "X-Scriberr-Signature": signature(body, "replacement-secret") },
+      body
+    });
+    assert.equal(replacement.status, 202);
   } finally {
     await receiver.close();
     db.close();
