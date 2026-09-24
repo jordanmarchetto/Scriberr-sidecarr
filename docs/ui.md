@@ -1,6 +1,14 @@
 # Sidecarr UI
 
-The optional UI is served at `/sidecarr` by the same listener that receives Scriberr webhooks. It currently provides the authenticated application shell, connection setup, responsive navigation, and light/dark themes. Settings and job details arrive in later checkpoints.
+The optional UI is served at `/sidecarr` by the same listener that receives Scriberr webhooks. It provides authenticated connection setup, behavioral settings, responsive navigation, and light/dark themes. Read-only job details arrive in a later checkpoint.
+
+## Settings
+
+The Settings page groups Scriberr, discovery, Notion, MQTT, notification, and summary behavior. Optional integrations stay collapsed until configured or opened. Advanced tuning is kept behind a separate disclosure control.
+
+Configuration precedence is `environment > Sidecarr database > built-in default`. An environment-owned field is shown but disabled with the controlling variable name. Unset fields remain empty and show their effective defaults as placeholders. Secrets are reported only as configured or not configured and require an explicit replace or remove action.
+
+Each section saves atomically and checks that it has not become stale in another browser session. Most changes activate in-process. Invalid or incomplete optional integrations are shown as degraded without stopping other Sidecarr work.
 
 ## Authentication
 

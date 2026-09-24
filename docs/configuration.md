@@ -2,9 +2,15 @@
 
 Start with [.env.sample](../.env.sample). This page explains the settings that usually need context.
 
-Sidecarr currently continues to use `.env` as its user-facing configuration interface. Internally, settings now resolve per field as `environment > Sidecarr database > built-in default` in preparation for the optional UI. Environment values always win and are never copied into SQLite. Until the settings UI is released, do not edit the `application_settings` table manually.
+Behavioral settings can be managed through the authenticated Sidecarr UI or `.env`. Settings resolve per field as `environment > Sidecarr database > built-in default`. Environment values always win, are never copied into SQLite, and appear read-only in the UI. Do not edit the `application_settings` table manually.
+
+Saving a UI section updates all of its editable fields atomically. Ordinary behavioral changes activate without restarting the container. If activation fails, the saved configuration remains visible, unrelated integrations keep running, and the UI directs you to Docker logs or a restart.
+
+Existing secrets are never returned to the browser. A blank secret field preserves it; use the explicit remove action to clear it. The Sidecarr data volume therefore contains usable credentials and should remain private.
 
 Missing Scriberr credentials leave `/health` available and pause background processing instead of terminating the container. An incomplete optional MQTT, Notion, SMTP, or notification-webhook section disables that integration and logs the affected environment-variable names without logging secret values.
+
+Optional integrations have no separate enable switch. Supplying their required fields enables them; removing those fields disables them.
 
 ## Scriberr connection
 

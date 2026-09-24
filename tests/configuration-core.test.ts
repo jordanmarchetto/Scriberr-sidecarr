@@ -4,7 +4,7 @@ import { tmpdir } from "node:os";
 import path from "node:path";
 import test from "node:test";
 import pino from "pino";
-import { ConfigurationManager } from "../src/configuration-manager.ts";
+import { ConfigurationConflictError, ConfigurationManager } from "../src/configuration-manager.ts";
 import { loadConfig, resolveConfig, safeSettingsSnapshot, settingRegistry } from "../src/config.ts";
 import { StateStore } from "../src/db.ts";
 import { WebhookReceiver } from "../src/webhook-receiver.ts";
@@ -144,8 +144,13 @@ test("group updates are atomic, respect environment ownership, and isolate activ
     assert.equal(update.resolution.config.mqttUrl, "mqtt://broker");
     assert.equal(update.resolution.config.mqttTopicPrefix, "new/topic");
     assert.match(update.activationError?.message ?? "", /broker unavailable/);
+    assert.match(update.revision, /:2$/);
     assert.equal(mqttActivations, 1);
     assert.equal(manager.current.canProcess, true);
+    await assert.rejects(
+      manager.updateGroup("mqtt", new Map([["mqttTopicPrefix", "stale/topic"]]), "stale-revision"),
+      ConfigurationConflictError
+    );
     await assert.rejects(
       manager.updateGroup("scriberr", new Map([["scriberrApiKey", "replacement"]])),
       /controlled by the environment/

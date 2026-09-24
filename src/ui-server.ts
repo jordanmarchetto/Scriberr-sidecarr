@@ -2,12 +2,14 @@ import { readFile, stat } from "node:fs/promises";
 import type { IncomingMessage, ServerResponse } from "node:http";
 import path from "node:path";
 import pino from "pino";
-import type { Config, SettingSource } from "./config.js";
-import { ConfigurationManager } from "./configuration-manager.js";
-import { BrowserAuthError, ScriberrBrowserAuth } from "./browser-auth.js";
+import { safeSettingsSnapshot, settingRegistry, type Config, type SettingDefinition, type SettingKey, type SettingSource } from "./config.js";
+import { ConfigurationConflictError, ConfigurationManager } from "./configuration-manager.js";
+import { BrowserAuthError, ScriberrBrowserAuth, type BrowserAuthentication } from "./browser-auth.js";
 import { sanitizeError } from "./errors.js";
 
 const maxApiBodyBytes = 64 * 1024;
+const settingsGroups = ["scriberr", "discovery", "notion", "mqtt", "notifications", "summaries"] as const;
+type SettingsGroup = typeof settingsGroups[number];
 const contentTypes: Record<string, string> = {
   ".css": "text/css; charset=utf-8",
   ".html": "text/html; charset=utf-8",
@@ -45,6 +47,15 @@ export class UiServer {
     }
     if (url.pathname === `${this.basePath}/api/setup/api-key`) {
       await this.createApiKey(request, response);
+      return true;
+    }
+    if (url.pathname === `${this.basePath}/api/settings`) {
+      await this.settings(request, response);
+      return true;
+    }
+    const settingsGroup = url.pathname.match(new RegExp(`^${this.basePath}/api/settings/([^/]+)$`))?.[1];
+    if (settingsGroup) {
+      await this.updateSettings(request, response, settingsGroup);
       return true;
     }
     if (url.pathname === `${this.basePath}/api` || url.pathname.startsWith(`${this.basePath}/api/`)) {
@@ -135,6 +146,117 @@ export class UiServer {
     }
   }
 
+  private async settings(request: IncomingMessage, response: ServerResponse): Promise<void> {
+    if (request.method !== "GET") {
+      response.setHeader("Allow", "GET");
+      this.respondJson(response, 405, { error: "method not allowed" });
+      return;
+    }
+    const authentication = await this.authenticated(request, response);
+    if (!authentication) return;
+    this.respondJson(response, 200, this.settingsPayload());
+  }
+
+  private async updateSettings(request: IncomingMessage, response: ServerResponse, groupName: string): Promise<void> {
+    if (request.method !== "PUT") {
+      response.setHeader("Allow", "PUT");
+      this.respondJson(response, 405, { error: "method not allowed" });
+      return;
+    }
+    if (!settingsGroups.includes(groupName as SettingsGroup)) {
+      this.respondJson(response, 404, { error: "settings group not found" });
+      return;
+    }
+    if (!this.validMutationOrigin(request) || request.headers["x-sidecarr-request"] !== "1") {
+      this.logger.warn({ group: groupName }, "Sidecarr settings update rejected by origin protection");
+      this.respondJson(response, 403, { error: "request origin rejected" });
+      return;
+    }
+    const authentication = await this.authenticated(request, response);
+    if (!authentication) return;
+
+    try {
+      const body = await this.readJson(request);
+      if (!body || typeof body !== "object" || !("revision" in body) || typeof body.revision !== "string" || !("values" in body) || !body.values || typeof body.values !== "object" || Array.isArray(body.values)) {
+        throw new BrowserAuthError(400, "invalid settings request");
+      }
+      const group = groupName as SettingsGroup;
+      const values = this.parseSettingsValues(group, body.values as Record<string, unknown>);
+      const update = await this.configuration.updateGroup(group, values, body.revision);
+      this.logger.info({ group, active: !update.activationError }, "Sidecarr settings updated");
+      this.respondJson(response, update.activationError ? 202 : 200, {
+        ...this.settingsPayload(),
+        active: !update.activationError,
+        restartRequired: Boolean(update.activationError),
+        ...(update.activationError ? { activationError: sanitizeError(update.activationError) } : {})
+      });
+    } catch (error) {
+      const status = error instanceof ConfigurationConflictError ? 409 : error instanceof BrowserAuthError ? error.status : 400;
+      const message = error instanceof ConfigurationConflictError
+        ? "Settings changed in another session. Reload before saving again."
+        : error instanceof BrowserAuthError ? error.message : "Unable to save settings";
+      this.logger.warn({ group: groupName, status, error: sanitizeError(error) }, "Sidecarr settings update failed");
+      this.respondJson(response, status, { error: message, ...(status === 409 ? { revision: this.configuration.revision } : {}) });
+    }
+  }
+
+  private settingsPayload(): object {
+    const resolution = this.configuration.current;
+    const manageableKeys = new Set<SettingKey>(settingRegistry.filter((definition) => definition.uiManageable).map((definition) => definition.key));
+    const snapshot = safeSettingsSnapshot(resolution).filter((setting) => manageableKeys.has(setting.key));
+    return {
+      revision: this.configuration.revision,
+      groups: settingsGroups.map((group) => ({
+        key: group,
+        settings: snapshot.filter((setting) => setting.group === group)
+      })),
+      issues: resolution.issues.filter((issue) => manageableKeys.has(issue.key))
+    };
+  }
+
+  private parseSettingsValues(group: SettingsGroup, input: Record<string, unknown>): Map<SettingKey, string | undefined> {
+    const values = new Map<SettingKey, string | undefined>();
+    for (const [key, inputValue] of Object.entries(input)) {
+      const definition: SettingDefinition | undefined = settingRegistry.find((candidate) => candidate.key === key);
+      if (!definition || !definition.uiManageable || definition.group !== group) {
+        throw new BrowserAuthError(400, `${key} is not an editable ${group} setting`);
+      }
+      const settingKey = definition.key as SettingKey;
+      const current = this.configuration.current.settings.get(settingKey);
+      if (!current?.editable) throw new BrowserAuthError(409, `${definition.env} is controlled by the environment`);
+
+      if (definition.secret) {
+        if (!inputValue || typeof inputValue !== "object" || !("action" in inputValue)) {
+          throw new BrowserAuthError(400, `${key} requires an explicit secret action`);
+        }
+        const secret = inputValue as { action?: unknown; value?: unknown };
+        if (secret.action === "preserve") continue;
+        if (secret.action === "remove") values.set(settingKey, undefined);
+        else if (secret.action === "replace" && typeof secret.value === "string" && secret.value.trim()) values.set(settingKey, secret.value);
+        else throw new BrowserAuthError(400, `${key} has an invalid secret action`);
+        continue;
+      }
+
+      if (inputValue === null || inputValue === "") values.set(settingKey, undefined);
+      else if (["string", "number", "boolean"].includes(typeof inputValue)) values.set(settingKey, String(inputValue));
+      else throw new BrowserAuthError(400, `${key} has an invalid value`);
+    }
+    return values;
+  }
+
+  private async authenticated(request: IncomingMessage, response: ServerResponse): Promise<BrowserAuthentication & { status: "authenticated" } | undefined> {
+    const authentication = await this.auth.authenticate(request.headers);
+    if (authentication.status === "unauthenticated") {
+      this.respondJson(response, 401, { error: "Scriberr authentication required" });
+      return undefined;
+    }
+    if (authentication.status === "unavailable") {
+      this.respondJson(response, 503, { error: "Scriberr is unavailable" });
+      return undefined;
+    }
+    return authentication;
+  }
+
   private async setupState(): Promise<SetupState> {
     const setting = this.configuration.current.settings.get("scriberrApiKey");
     const credentialStatus = await this.auth.backgroundCredentialStatus();
@@ -163,6 +285,22 @@ export class UiServer {
     for await (const chunk of request) {
       size += Buffer.byteLength(chunk);
       if (size > maxApiBodyBytes) throw new BrowserAuthError(413, "request body too large");
+    }
+  }
+
+  private async readJson(request: IncomingMessage): Promise<unknown> {
+    const chunks: Buffer[] = [];
+    let size = 0;
+    for await (const chunk of request) {
+      const buffer = Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk);
+      size += buffer.length;
+      if (size > maxApiBodyBytes) throw new BrowserAuthError(413, "request body too large");
+      chunks.push(buffer);
+    }
+    try {
+      return JSON.parse(Buffer.concat(chunks).toString("utf8"));
+    } catch {
+      throw new BrowserAuthError(400, "invalid JSON");
     }
   }
 

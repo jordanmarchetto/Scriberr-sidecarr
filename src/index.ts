@@ -1,7 +1,7 @@
 import pino from "pino";
 import { BackgroundRuntime } from "./background-runtime.js";
 import { ScriberrBrowserAuth } from "./browser-auth.js";
-import { loadBootstrapConfig } from "./config.js";
+import { loadBootstrapConfig, type ActivationBehavior, type Config } from "./config.js";
 import { ConfigurationManager } from "./configuration-manager.js";
 import { StateStore } from "./db.js";
 import { Metrics } from "./metrics.js";
@@ -50,22 +50,32 @@ try {
   const metrics = new Metrics();
   logger.info({ dbPath: config.dbPath }, "state database opened");
   let runtime = new BackgroundRuntime(config, db, logger, metrics);
-  const initialRuntime = runtime;
-  configuration.registerActivator("scriberr", (next) => {
-    const replacement = new BackgroundRuntime(next, db, logger, metrics);
-    runtime = replacement;
-    if (configuration.current.canProcess) {
-      void replacement.runCycle().catch((error) => logger.error({ err: error }, "cycle failed after Scriberr configuration changed"));
-    }
-    return () => replacement.close();
-  }, () => initialRuntime.close());
   let interval: NodeJS.Timeout | undefined;
-
   const runCycle = () => configuration.current.canProcess ? runtime.runCycle() : Promise.resolve(false);
+  const schedule = (next: Config) => {
+    if (interval) clearInterval(interval);
+    interval = setInterval(
+      () => runCycle().catch((error) => logger.error({ err: error }, "cycle failed")),
+      next.scanIntervalMs
+    );
+  };
+  const activateRuntime = (next: Config) => {
+    const replacement = new BackgroundRuntime(next, db, logger, metrics);
+    const previous = runtime;
+    runtime = replacement;
+    previous.close();
+    schedule(next);
+    if (configuration.current.canProcess) {
+      void replacement.runCycle().catch((error) => logger.error({ err: error }, "cycle failed after configuration changed"));
+    }
+  };
+  for (const behavior of ["scriberr", "discovery", "mqtt", "notifications", "summaries", "notion"] satisfies ActivationBehavior[]) {
+    configuration.registerActivator(behavior, activateRuntime);
+  }
   const auth = new ScriberrBrowserAuth(() => configuration.current.config);
   const ui = new UiServer(() => configuration.current.config, configuration, auth, logger);
   const receiver = new WebhookReceiver(
-    { ...config, webhookSecret: runtime.webhookSecret },
+    () => ({ ...configuration.current.config, webhookSecret: runtime.webhookSecret }),
     db,
     async () => { await runCycle(); },
     logger,
@@ -82,6 +92,7 @@ try {
     if (interval) clearInterval(interval);
     await receiver.close();
     configuration.close();
+    runtime.close();
     db.close();
     logger.info("shutdown complete");
     process.exit(0);
@@ -94,10 +105,7 @@ try {
     logger.warn("Scriberr background processing is paused until required configuration is provided");
   }
   await runCycle();
-  interval = setInterval(
-    () => runCycle().catch((error) => logger.error({ err: error }, "cycle failed")),
-    config.scanIntervalMs
-  );
+  schedule(config);
   logger.info({ discoveryMode: config.discoveryMode, intervalSeconds: config.scanIntervalMs / 1000 }, "scriberr sidecarr started");
 } catch (error) {
   logger.fatal({ err: error }, "scriberr sidecarr failed to start");

@@ -12,6 +12,31 @@ type Session = {
     source: "environment" | "database" | "default" | "unset";
   };
 };
+type SettingSource = "environment" | "database" | "default" | "unset";
+type SettingSnapshot = {
+  key: string;
+  env: string;
+  group: string;
+  value?: string | number | boolean;
+  source: SettingSource;
+  editable: boolean;
+  secret: boolean;
+  advanced: boolean;
+  configured: boolean;
+  defaultValue?: string;
+  input: "text" | "url" | "number" | "boolean" | "select";
+  options?: readonly string[];
+  error?: string;
+};
+type SettingsGroup = { key: string; settings: SettingSnapshot[] };
+type SettingsPayload = {
+  revision: string;
+  groups: SettingsGroup[];
+  issues: Array<{ key: string; group: string; message: string }>;
+  active?: boolean;
+  restartRequired?: boolean;
+  activationError?: string;
+};
 
 const basePath = document.querySelector<HTMLMetaElement>('meta[name="sidecarr-base"]')?.content.replace(/\/$/, "") || "/sidecarr";
 const scriberrLinkHint = "Open Scriberr. You may need to sign in again.";
@@ -142,7 +167,7 @@ export function App() {
         <div className="content">
           {page === "overview" && <Overview session={session!} token={token!} reload={() => loadSession(token)} />}
           {page === "jobs" && <Placeholder title="Jobs" message="Job history and processing details arrive in the operations checkpoint." />}
-          {page === "settings" && <Placeholder title="Settings" message="Behavioral settings become editable in the next checkpoint." />}
+          {page === "settings" && <Settings token={token!} />}
         </div>
       </main>
       <nav className="bottom-nav" aria-label="Mobile navigation">
@@ -216,6 +241,192 @@ function Overview({ session, token, reload }: { session: Session; token: string;
 
 function StatusCard({ label, value, detail, warning = false }: { label: string; value: string; detail: string; warning?: boolean }) {
   return <article className="card"><span className="card-label">{label}</span><strong><span className={`status-dot${warning ? " warning" : ""}`} />{value}</strong><p>{detail}</p></article>;
+}
+
+const groupLabels: Record<string, { title: string; description: string; optional?: boolean }> = {
+  scriberr: { title: "Scriberr", description: "Connection, browser links, and API behavior." },
+  discovery: { title: "Discovery", description: "How Sidecarr finds work and checks for missed jobs." },
+  notion: { title: "Notion", description: "Publish completed recordings to a shared Notion page.", optional: true },
+  mqtt: { title: "MQTT", description: "Publish lifecycle events to an MQTT broker.", optional: true },
+  notifications: { title: "Notifications", description: "Send job-ready webhooks or direct email.", optional: true },
+  summaries: { title: "Summaries", description: "Control Sidecarr-requested summary generation." }
+};
+
+function settingLabel(key: string): string {
+  return key
+    .replace(/([a-z0-9])([A-Z])/g, "$1 $2")
+    .replace(/^./, (letter) => letter.toUpperCase())
+    .replace(/\bApi\b/g, "API")
+    .replace(/\bMqtt\b/g, "MQTT")
+    .replace(/\bSmtp\b/g, "SMTP")
+    .replace(/\bUrl\b/g, "URL")
+    .replace(/\bQos\b/g, "QoS");
+}
+
+function Settings({ token }: { token: string }) {
+  const [payload, setPayload] = useState<SettingsPayload | null>(null);
+  const [drafts, setDrafts] = useState<Record<string, string>>({});
+  const [secretActions, setSecretActions] = useState<Record<string, "preserve" | "replace" | "remove">>({});
+  const [saving, setSaving] = useState<string | null>(null);
+  const [message, setMessage] = useState<Record<string, string>>({});
+  const [loadError, setLoadError] = useState("");
+
+  const acceptPayload = useCallback((next: SettingsPayload, resetGroup?: string) => {
+    const nextDrafts: Record<string, string> = {};
+    const nextSecrets: Record<string, "preserve"> = {};
+    for (const group of next.groups) {
+      for (const setting of group.settings) {
+        nextDrafts[setting.key] = setting.secret || setting.source === "default" || setting.source === "unset"
+          ? ""
+          : String(setting.value ?? "");
+        if (setting.secret) nextSecrets[setting.key] = "preserve";
+      }
+    }
+    setPayload(next);
+    setDrafts((current) => resetGroup
+      ? Object.fromEntries(Object.entries(nextDrafts).map(([key, value]) => {
+          const settingGroup = next.groups.find((group) => group.settings.some((setting) => setting.key === key))?.key;
+          return [key, settingGroup === resetGroup ? value : current[key] ?? value];
+        }))
+      : nextDrafts);
+    setSecretActions((current) => resetGroup
+      ? Object.fromEntries(Object.entries(nextSecrets).map(([key, value]) => {
+          const settingGroup = next.groups.find((group) => group.settings.some((setting) => setting.key === key))?.key;
+          return [key, settingGroup === resetGroup ? value : current[key] ?? value];
+        }))
+      : nextSecrets);
+  }, []);
+
+  const load = useCallback(async () => {
+    setLoadError("");
+    try {
+      const response = await fetch(`${basePath}/api/settings`, { headers: { Authorization: `Bearer ${token}` } });
+      if (!response.ok) throw new Error(`Settings request failed with HTTP ${response.status}`);
+      acceptPayload(await response.json() as SettingsPayload);
+    } catch (error) {
+      setLoadError(error instanceof Error ? error.message : "Unable to load settings");
+    }
+  }, [acceptPayload, token]);
+
+  useEffect(() => { void load(); }, [load]);
+
+  const save = async (group: SettingsGroup) => {
+    if (!payload) return;
+    setSaving(group.key);
+    setMessage((current) => ({ ...current, [group.key]: "" }));
+    const values: Record<string, unknown> = {};
+    for (const setting of group.settings.filter((candidate) => candidate.editable)) {
+      if (setting.secret) {
+        const action = secretActions[setting.key] ?? "preserve";
+        values[setting.key] = action === "replace" ? { action, value: drafts[setting.key] ?? "" } : { action };
+      } else {
+        values[setting.key] = drafts[setting.key]?.trim() ? drafts[setting.key] : null;
+      }
+    }
+    try {
+      const response = await fetch(`${basePath}/api/settings/${group.key}`, {
+        method: "PUT",
+        headers: { Authorization: `Bearer ${token}`, "Content-Type": "application/json", "X-Sidecarr-Request": "1" },
+        body: JSON.stringify({ revision: payload.revision, values })
+      });
+      const body = await response.json() as SettingsPayload & { error?: string };
+      if (!response.ok && response.status !== 202) {
+        if (response.status === 409) void load();
+        throw new Error(body.error ?? `Save failed with HTTP ${response.status}`);
+      }
+      acceptPayload(body, group.key);
+      setMessage((current) => ({
+        ...current,
+        [group.key]: body.restartRequired ? "Saved, but activation failed. Restart Sidecarr or check Docker logs." : "Saved and active."
+      }));
+    } catch (error) {
+      setMessage((current) => ({ ...current, [group.key]: error instanceof Error ? error.message : "Unable to save settings" }));
+    } finally {
+      setSaving(null);
+    }
+  };
+
+  if (loadError) return <section><div className="eyebrow">Configuration</div><h1>Settings</h1><article className="empty-state"><h2>Settings unavailable</h2><p>{loadError}</p><button className="primary-button" onClick={() => void load()}>Try again</button></article></section>;
+  if (!payload) return <CenteredState title="Loading settings" message="Reading the effective Sidecarr configuration…" />;
+
+  return (
+    <section>
+      <div className="eyebrow">Configuration</div>
+      <h1>Settings</h1>
+      <p className="lede">Environment values take priority and cannot be edited here. Empty fields use the shown default or remain disabled.</p>
+      <div className="settings-list">
+        {payload.groups.map((group) => (
+          <SettingsSection
+            key={group.key}
+            group={group}
+            issues={payload.issues.filter((issue) => issue.group === group.key)}
+            drafts={drafts}
+            secretActions={secretActions}
+            saving={saving === group.key}
+            message={message[group.key]}
+            setDraft={(key, value) => setDrafts((current) => ({ ...current, [key]: value }))}
+            setSecretAction={(key, action) => setSecretActions((current) => ({ ...current, [key]: action }))}
+            save={() => void save(group)}
+          />
+        ))}
+      </div>
+    </section>
+  );
+}
+
+function SettingsSection({ group, issues, drafts, secretActions, saving, message, setDraft, setSecretAction, save }: {
+  group: SettingsGroup;
+  issues: SettingsPayload["issues"];
+  drafts: Record<string, string>;
+  secretActions: Record<string, "preserve" | "replace" | "remove">;
+  saving: boolean;
+  message?: string;
+  setDraft: (key: string, value: string) => void;
+  setSecretAction: (key: string, action: "preserve" | "replace" | "remove") => void;
+  save: () => void;
+}) {
+  const info = groupLabels[group.key] ?? { title: group.key, description: "" };
+  const basic = group.settings.filter((setting) => !setting.advanced);
+  const advanced = group.settings.filter((setting) => setting.advanced);
+  const configured = group.settings.some((setting) => ["environment", "database"].includes(setting.source));
+  const content = (
+    <form onSubmit={(event) => { event.preventDefault(); save(); }}>
+      <div className="settings-fields">
+        {basic.map((setting) => <SettingField key={setting.key} setting={setting} draft={drafts[setting.key] ?? ""} secretAction={secretActions[setting.key] ?? "preserve"} setDraft={setDraft} setSecretAction={setSecretAction} />)}
+      </div>
+      {advanced.length > 0 && <details className="advanced-settings"><summary>Advanced settings</summary><div className="settings-fields">{advanced.map((setting) => <SettingField key={setting.key} setting={setting} draft={drafts[setting.key] ?? ""} secretAction={secretActions[setting.key] ?? "preserve"} setDraft={setDraft} setSecretAction={setSecretAction} />)}</div></details>}
+      {issues.length > 0 && <div className="settings-warning" role="status">{issues.map((issue) => <div key={`${issue.key}-${issue.message}`}>{settingLabel(issue.key)}: {issue.message}</div>)}</div>}
+      <div className="settings-actions"><button className="primary-button" disabled={saving || !group.settings.some((setting) => setting.editable)}>{saving ? "Saving…" : "Save section"}</button>{message && <span className="save-message">{message}</span>}</div>
+    </form>
+  );
+  if (info.optional) {
+    return <details className="settings-section" defaultOpen={configured}><summary><span><strong>{info.title}</strong><small>{info.description}</small></span><span className={`integration-state ${configured ? "configured" : ""}`}>{configured ? "Configured" : "Not configured"}</span></summary>{content}</details>;
+  }
+  return <article className="settings-section fixed"><header><div><strong>{info.title}</strong><small>{info.description}</small></div></header>{content}</article>;
+}
+
+function SettingField({ setting, draft, secretAction, setDraft, setSecretAction }: {
+  setting: SettingSnapshot;
+  draft: string;
+  secretAction: "preserve" | "replace" | "remove";
+  setDraft: (key: string, value: string) => void;
+  setSecretAction: (key: string, action: "preserve" | "replace" | "remove") => void;
+}) {
+  const placeholder = setting.secret
+    ? setting.configured ? "Configured — leave blank to preserve" : "Not configured"
+    : setting.defaultValue ? `Default: ${setting.defaultValue}` : "Not configured";
+  const common = { id: setting.key, disabled: !setting.editable, value: draft, onChange: (event: React.ChangeEvent<HTMLInputElement | HTMLSelectElement>) => { setDraft(setting.key, event.target.value); if (setting.secret) setSecretAction(setting.key, event.target.value ? "replace" : "preserve"); } };
+  return (
+    <label className="setting-field" htmlFor={setting.key}>
+      <span><strong>{settingLabel(setting.key)}</strong><code>{setting.env}</code></span>
+      {setting.input === "select" || setting.input === "boolean"
+        ? <select {...common}><option value="">{placeholder}</option>{(setting.input === "boolean" ? ["true", "false"] : setting.options ?? []).map((option) => <option key={option} value={option}>{option}</option>)}</select>
+        : <input {...common} type={setting.secret ? "password" : setting.input} placeholder={secretAction === "remove" ? "Will be removed when saved" : placeholder} />}
+      <small>{setting.source === "environment" ? `Managed by ${setting.env}; remove it from .env to edit here.` : `Effective source: ${setting.source}`}</small>
+      {setting.secret && setting.editable && setting.configured && <button type="button" className="text-button" onClick={() => { setDraft(setting.key, ""); setSecretAction(setting.key, secretAction === "remove" ? "preserve" : "remove"); }}>{secretAction === "remove" ? "Keep existing secret" : "Remove secret"}</button>}
+      {setting.error && <small className="field-error">{setting.error}</small>}
+    </label>
+  );
 }
 
 function Login({ onAuthenticated, theme, setTheme }: { onAuthenticated: (token: string) => void; theme: Theme; setTheme: (theme: Theme) => void }) {

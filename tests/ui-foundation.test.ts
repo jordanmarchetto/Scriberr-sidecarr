@@ -196,3 +196,87 @@ test("base-path assets and client routes are served without intercepting webhook
     assert.equal(webhook.status, 202);
   });
 });
+
+test("settings API masks secrets, saves sections atomically, and rejects stale updates", async () => {
+  const value = scenario();
+  const request: typeof fetch = async (_input, init) => {
+    const headers = new Headers(init?.headers);
+    if (headers.has("authorization") || headers.get("x-api-key") === "worker-key") return Response.json({ ok: true });
+    return Response.json({ error: "unauthorized" }, { status: 401 });
+  };
+  await withServer(value, request, async (origin) => {
+    const headers = { Authorization: "Bearer browser-token" };
+    const initial = await fetch(`${origin}/sidecarr/api/settings`, { headers });
+    assert.equal(initial.status, 200);
+    const first = await initial.json() as {
+      revision: string;
+      groups: Array<{ key: string; settings: Array<{ key: string; value?: string; source: string; editable: boolean; configured: boolean }> }>;
+    };
+    const apiKey = first.groups.find((group) => group.key === "scriberr")?.settings.find((setting) => setting.key === "scriberrApiKey");
+    assert.deepEqual(apiKey, {
+      key: "scriberrApiKey",
+      env: "SIDECARR_SCRIBERR_API_KEY",
+      group: "scriberr",
+      source: "environment",
+      editable: false,
+      activation: "scriberr",
+      input: "text",
+      secret: true,
+      advanced: false,
+      configured: true
+    });
+
+    const save = await fetch(`${origin}/sidecarr/api/settings/mqtt`, {
+      method: "PUT",
+      headers: { ...headers, Origin: origin, "Content-Type": "application/json", "X-Sidecarr-Request": "1" },
+      body: JSON.stringify({
+        revision: first.revision,
+        values: {
+          mqttUrl: "mqtt://broker:1883",
+          mqttUsername: "sidecarr",
+          mqttPassword: { action: "replace", value: "secret-value" }
+        }
+      })
+    });
+    assert.equal(save.status, 200);
+    const saved = await save.json() as typeof first;
+    const mqtt = saved.groups.find((group) => group.key === "mqtt")?.settings ?? [];
+    assert.equal(mqtt.find((setting) => setting.key === "mqttUrl")?.value, "mqtt://broker:1883");
+    assert.equal(mqtt.find((setting) => setting.key === "mqttPassword")?.configured, true);
+    assert.equal(mqtt.find((setting) => setting.key === "mqttPassword")?.value, undefined);
+    assert.equal(value.configuration.current.config.mqttPassword, "secret-value");
+
+    const stale = await fetch(`${origin}/sidecarr/api/settings/mqtt`, {
+      method: "PUT",
+      headers: { ...headers, Origin: origin, "Content-Type": "application/json", "X-Sidecarr-Request": "1" },
+      body: JSON.stringify({ revision: first.revision, values: { mqttTopicPrefix: "stale/topic" } })
+    });
+    assert.equal(stale.status, 409);
+    assert.equal(value.configuration.current.config.mqttTopicPrefix, "home/audio/scriberr");
+
+    const invalid = await fetch(`${origin}/sidecarr/api/settings/mqtt`, {
+      method: "PUT",
+      headers: { ...headers, Origin: origin, "Content-Type": "application/json", "X-Sidecarr-Request": "1" },
+      body: JSON.stringify({ revision: saved.revision, values: { mqttTopicPrefix: "new/topic", scriberrUrl: "http://wrong-group" } })
+    });
+    assert.equal(invalid.status, 400);
+    assert.equal(value.configuration.current.config.mqttTopicPrefix, "home/audio/scriberr");
+  });
+});
+
+test("settings API reports incomplete optional integrations without exposing them to other groups", async () => {
+  const value = scenario();
+  const request: typeof fetch = async () => Response.json({ ok: true });
+  await withServer(value, request, async (origin) => {
+    const headers = { Authorization: "Bearer browser-token", Origin: origin, "Content-Type": "application/json", "X-Sidecarr-Request": "1" };
+    const response = await fetch(`${origin}/sidecarr/api/settings/mqtt`, {
+      method: "PUT",
+      headers,
+      body: JSON.stringify({ revision: value.configuration.revision, values: { mqttUsername: "orphaned-user" } })
+    });
+    assert.equal(response.status, 200);
+    const body = await response.json() as { issues: Array<{ group: string; key: string; message: string }> };
+    assert.deepEqual(body.issues, [{ group: "mqtt", key: "mqttUrl", env: "SIDECARR_MQTT_URL", source: "unset", message: "is required when MQTT credentials are present" }]);
+    assert.equal(value.configuration.current.config.mqttUrl, undefined);
+  });
+});

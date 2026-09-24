@@ -4,6 +4,7 @@ export type SettingGroup = "runtime" | "scriberr" | "discovery" | "mqtt" | "noti
 export type ActivationBehavior = "bootstrap" | Exclude<SettingGroup, "runtime">;
 export type SettingSource = "environment" | "database" | "default" | "unset";
 export type SettingValue = string | number | boolean | undefined;
+export type SettingInput = "text" | "url" | "number" | "boolean" | "select";
 
 export type SettingDefinition = {
   key: string;
@@ -14,6 +15,8 @@ export type SettingDefinition = {
   secret?: boolean;
   uiManageable: boolean;
   advanced?: boolean;
+  input?: SettingInput;
+  options?: readonly string[];
   activation: ActivationBehavior;
 };
 
@@ -48,37 +51,37 @@ export const settingRegistry = [
   { key: "uiBasePath", env: "SIDECARR_UI_BASE_PATH", group: "runtime", parser: z.string().regex(/^\/[a-zA-Z0-9/_-]*$/, "must be an absolute URL path"), defaultValue: "/sidecarr", uiManageable: false, activation: "bootstrap" },
   { key: "webhookCallbackUrl", env: "SIDECARR_WEBHOOK_CALLBACK_URL", group: "runtime", parser: optionalUrl, uiManageable: false, advanced: true, activation: "bootstrap" },
   { key: "watchFolder", env: "SIDECARR_WATCH_FOLDER", group: "runtime", parser: requiredString, defaultValue: "/watch/transcripts", uiManageable: false, activation: "bootstrap" },
-  { key: "scriberrUrl", env: "SIDECARR_SCRIBERR_URL", group: "scriberr", parser: url, defaultValue: "http://scriberr:8080", uiManageable: true, activation: "scriberr" },
-  { key: "scriberrPublicUrl", env: "SIDECARR_SCRIBERR_PUBLIC_URL", group: "scriberr", parser: optionalUrl, uiManageable: true, activation: "scriberr" },
+  { key: "scriberrUrl", env: "SIDECARR_SCRIBERR_URL", group: "scriberr", parser: url, defaultValue: "http://scriberr:8080", uiManageable: true, input: "url", activation: "scriberr" },
+  { key: "scriberrPublicUrl", env: "SIDECARR_SCRIBERR_PUBLIC_URL", group: "scriberr", parser: optionalUrl, uiManageable: true, input: "url", activation: "scriberr" },
   { key: "scriberrApiKey", env: "SIDECARR_SCRIBERR_API_KEY", group: "scriberr", parser: optionalString, secret: true, uiManageable: true, activation: "scriberr" },
-  { key: "apiTimeoutSeconds", env: "SIDECARR_API_TIMEOUT_SECONDS", group: "scriberr", parser: integer(1), defaultValue: "15", uiManageable: true, advanced: true, activation: "scriberr" },
-  { key: "apiMaxAttempts", env: "SIDECARR_API_MAX_ATTEMPTS", group: "scriberr", parser: integer(1, 5), defaultValue: "3", uiManageable: true, advanced: true, activation: "scriberr" },
-  { key: "apiRetryBaseMilliseconds", env: "SIDECARR_API_RETRY_BASE_MILLISECONDS", group: "scriberr", parser: integer(0), defaultValue: "500", uiManageable: true, advanced: true, activation: "scriberr" },
-  { key: "discoveryMode", env: "SIDECARR_DISCOVERY_MODE", group: "discovery", parser: z.enum(["webhook", "filesystem"]), defaultValue: "webhook", uiManageable: true, activation: "discovery" },
-  { key: "scanIntervalSeconds", env: "SIDECARR_SCAN_INTERVAL_SECONDS", group: "discovery", parser: integer(1), defaultValue: "30", uiManageable: true, advanced: true, activation: "discovery" },
-  { key: "reconciliationIntervalSeconds", env: "SIDECARR_RECONCILIATION_INTERVAL_SECONDS", group: "discovery", parser: integer(1), defaultValue: "300", uiManageable: true, advanced: true, activation: "discovery" },
+  { key: "apiTimeoutSeconds", env: "SIDECARR_API_TIMEOUT_SECONDS", group: "scriberr", parser: integer(1), defaultValue: "15", uiManageable: true, advanced: true, input: "number", activation: "scriberr" },
+  { key: "apiMaxAttempts", env: "SIDECARR_API_MAX_ATTEMPTS", group: "scriberr", parser: integer(1, 5), defaultValue: "3", uiManageable: true, advanced: true, input: "number", activation: "scriberr" },
+  { key: "apiRetryBaseMilliseconds", env: "SIDECARR_API_RETRY_BASE_MILLISECONDS", group: "scriberr", parser: integer(0), defaultValue: "500", uiManageable: true, advanced: true, input: "number", activation: "scriberr" },
+  { key: "discoveryMode", env: "SIDECARR_DISCOVERY_MODE", group: "discovery", parser: z.enum(["webhook", "filesystem"]), defaultValue: "webhook", uiManageable: true, input: "select", options: ["webhook", "filesystem"], activation: "discovery" },
+  { key: "scanIntervalSeconds", env: "SIDECARR_SCAN_INTERVAL_SECONDS", group: "discovery", parser: integer(1), defaultValue: "30", uiManageable: true, advanced: true, input: "number", activation: "discovery" },
+  { key: "reconciliationIntervalSeconds", env: "SIDECARR_RECONCILIATION_INTERVAL_SECONDS", group: "discovery", parser: integer(1), defaultValue: "300", uiManageable: true, advanced: true, input: "number", activation: "discovery" },
   { key: "webhookSecret", env: "SIDECARR_WEBHOOK_SECRET", group: "discovery", parser: optionalString, secret: true, uiManageable: true, advanced: true, activation: "discovery" },
-  { key: "mqttUrl", env: "SIDECARR_MQTT_URL", group: "mqtt", parser: optionalUrl, uiManageable: true, activation: "mqtt" },
+  { key: "mqttUrl", env: "SIDECARR_MQTT_URL", group: "mqtt", parser: optionalUrl, uiManageable: true, input: "url", activation: "mqtt" },
   { key: "mqttUsername", env: "SIDECARR_MQTT_USERNAME", group: "mqtt", parser: optionalString, uiManageable: true, activation: "mqtt" },
   { key: "mqttPassword", env: "SIDECARR_MQTT_PASSWORD", group: "mqtt", parser: optionalString, secret: true, uiManageable: true, activation: "mqtt" },
   { key: "mqttTopicPrefix", env: "SIDECARR_MQTT_TOPIC_PREFIX", group: "mqtt", parser: requiredString, defaultValue: "home/audio/scriberr", uiManageable: true, activation: "mqtt" },
-  { key: "mqttQos", env: "SIDECARR_MQTT_QOS", group: "mqtt", parser: integer(0, 2), defaultValue: "1", uiManageable: true, advanced: true, activation: "mqtt" },
-  { key: "mqttRetain", env: "SIDECARR_MQTT_RETAIN", group: "mqtt", parser: booleanString, defaultValue: "false", uiManageable: true, advanced: true, activation: "mqtt" },
-  { key: "notificationWebhookUrl", env: "SIDECARR_NOTIFICATION_WEBHOOK_URL", group: "notifications", parser: optionalUrl, uiManageable: true, activation: "notifications" },
+  { key: "mqttQos", env: "SIDECARR_MQTT_QOS", group: "mqtt", parser: integer(0, 2), defaultValue: "1", uiManageable: true, advanced: true, input: "select", options: ["0", "1", "2"], activation: "mqtt" },
+  { key: "mqttRetain", env: "SIDECARR_MQTT_RETAIN", group: "mqtt", parser: booleanString, defaultValue: "false", uiManageable: true, advanced: true, input: "boolean", activation: "mqtt" },
+  { key: "notificationWebhookUrl", env: "SIDECARR_NOTIFICATION_WEBHOOK_URL", group: "notifications", parser: optionalUrl, uiManageable: true, input: "url", activation: "notifications" },
   { key: "notificationWebhookToken", env: "SIDECARR_NOTIFICATION_WEBHOOK_TOKEN", group: "notifications", parser: optionalString, secret: true, uiManageable: true, activation: "notifications" },
   { key: "smtpUrl", env: "SIDECARR_SMTP_URL", group: "notifications", parser: optionalString, secret: true, uiManageable: true, activation: "notifications" },
   { key: "emailFrom", env: "SIDECARR_EMAIL_FROM", group: "notifications", parser: optionalString, uiManageable: true, activation: "notifications" },
   { key: "emailTo", env: "SIDECARR_EMAIL_TO", group: "notifications", parser: optionalString, uiManageable: true, activation: "notifications" },
   { key: "emailSubjectTemplate", env: "SIDECARR_EMAIL_SUBJECT_TEMPLATE", group: "notifications", parser: requiredString, defaultValue: "Scriberr job ready: {title}", uiManageable: true, advanced: true, activation: "notifications" },
-  { key: "autogenerateSummary", env: "SIDECARR_AUTOGENERATE_SUMMARY", group: "summaries", parser: booleanString, defaultValue: "false", uiManageable: true, activation: "summaries" },
+  { key: "autogenerateSummary", env: "SIDECARR_AUTOGENERATE_SUMMARY", group: "summaries", parser: booleanString, defaultValue: "false", uiManageable: true, input: "boolean", activation: "summaries" },
   { key: "summaryModel", env: "SIDECARR_SUMMARY_MODEL", group: "summaries", parser: optionalString, uiManageable: true, advanced: true, activation: "summaries" },
   { key: "summaryTemplate", env: "SIDECARR_SUMMARY_TEMPLATE", group: "summaries", parser: optionalString, defaultValue: "Default", uiManageable: true, activation: "summaries" },
-  { key: "summaryPollIntervalSeconds", env: "SIDECARR_SUMMARY_POLL_INTERVAL_SECONDS", group: "summaries", parser: integer(1), defaultValue: "30", uiManageable: true, advanced: true, activation: "summaries" },
-  { key: "summaryTimeoutSeconds", env: "SIDECARR_SUMMARY_TIMEOUT_SECONDS", group: "summaries", parser: integer(1), defaultValue: "3600", uiManageable: true, advanced: true, activation: "summaries" },
-  { key: "notebookProvider", env: "SIDECARR_NOTEBOOK_PROVIDER", group: "notion", parser: z.enum(["notion"]).optional(), uiManageable: true, activation: "notion" },
+  { key: "summaryPollIntervalSeconds", env: "SIDECARR_SUMMARY_POLL_INTERVAL_SECONDS", group: "summaries", parser: integer(1), defaultValue: "30", uiManageable: true, advanced: true, input: "number", activation: "summaries" },
+  { key: "summaryTimeoutSeconds", env: "SIDECARR_SUMMARY_TIMEOUT_SECONDS", group: "summaries", parser: integer(1), defaultValue: "3600", uiManageable: true, advanced: true, input: "number", activation: "summaries" },
+  { key: "notebookProvider", env: "SIDECARR_NOTEBOOK_PROVIDER", group: "notion", parser: z.enum(["notion"]).optional(), uiManageable: true, input: "select", options: ["notion"], activation: "notion" },
   { key: "notionToken", env: "SIDECARR_NOTION_TOKEN", group: "notion", parser: optionalString, secret: true, uiManageable: true, activation: "notion" },
-  { key: "notionParentPageUrl", env: "SIDECARR_NOTION_PARENT_PAGE_URL", group: "notion", parser: optionalUrl, uiManageable: true, activation: "notion" },
-  { key: "notionBackfill", env: "SIDECARR_NOTION_BACKFILL", group: "notion", parser: booleanString, defaultValue: "false", uiManageable: true, advanced: true, activation: "notion" }
+  { key: "notionParentPageUrl", env: "SIDECARR_NOTION_PARENT_PAGE_URL", group: "notion", parser: optionalUrl, uiManageable: true, input: "url", activation: "notion" },
+  { key: "notionBackfill", env: "SIDECARR_NOTION_BACKFILL", group: "notion", parser: booleanString, defaultValue: "false", uiManageable: true, advanced: true, input: "boolean", activation: "notion" }
 ] as const satisfies readonly SettingDefinition[];
 
 export type SettingKey = typeof settingRegistry[number]["key"];
@@ -213,6 +216,8 @@ export function resolveConfig(env: NodeJS.ProcessEnv = process.env, reader?: Set
       secret: metadata.secret ?? false,
       advanced: metadata.advanced ?? false,
       activation: metadata.activation,
+      input: metadata.input ?? "text",
+      ...(metadata.options ? { options: metadata.options } : {}),
       ...(metadata.defaultValue === undefined ? {} : { defaultValue: metadata.defaultValue }),
       ...(error ? { error } : {})
     };
