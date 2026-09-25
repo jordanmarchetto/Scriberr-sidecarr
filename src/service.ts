@@ -48,6 +48,10 @@ export class SidecarService {
     this.filesystemDiscoveryEnabled = enabled;
   }
 
+  get effectiveDiscoveryMode(): "webhook" | "filesystem" {
+    return this.filesystemDiscoveryEnabled ? "filesystem" : "webhook";
+  }
+
   async runCycle(): Promise<void> {
     if (this.cycleRunning) {
       this.cycleQueued = true;
@@ -122,7 +126,7 @@ export class SidecarService {
   }
 
   private discoverJob(jobId: string, folder: string, now: string, source: string, title: string | null = null): void {
-    const result = this.db.discover(jobId, folder, now, source);
+    const result = this.db.discover(jobId, folder, now, source, title);
     if (!result.inserted) return;
     this.emit(result.job, "job_found", "discovered", "discovered", title);
     this.logger.info({ jobId, source }, "job discovered");
@@ -155,6 +159,7 @@ export class SidecarService {
       this.logger.info({ jobId: previous.job_id, attempt: current.attempt }, "Scriberr job rerun detected");
     }
     this.db.updateJob(previous.job_id, {
+      title: job.title?.trim() || current.title,
       scriberr_status: job.status,
       last_checked_at: checkedAt,
       last_error: job.error_message ?? null
@@ -319,6 +324,7 @@ export class SidecarService {
     const previousState = row.sidecar_state;
     this.db.updateJob(row.job_id, { sidecar_state: state });
     const updated = this.db.getJob(row.job_id)!;
+    this.db.recordJobState(updated);
     this.emit(updated, eventType, state, status, title);
     this.logger.info({
       jobId: row.job_id,
@@ -431,6 +437,7 @@ export class SidecarService {
         job_ready_at: occurredAt,
         job_ready_outcome: outcome
       });
+      this.db.recordJobState(this.db.getJob(row.job_id)!, occurredAt);
       this.logger.info({ jobId: row.job_id, attempt: row.attempt, outcome }, "job is ready");
     }
   }

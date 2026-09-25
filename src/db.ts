@@ -1,7 +1,7 @@
 import Database from "better-sqlite3";
 import { chmodSync } from "node:fs";
 import { sanitizeError } from "./errors.js";
-import type { JobRow, ScriberrWebhookPayload, SidecarState, WebhookSignalRow } from "./types.js";
+import type { JobRow, JobStateHistoryRow, ScriberrWebhookPayload, SidecarState, WebhookSignalRow } from "./types.js";
 
 export type PendingEvent = {
   id: number;
@@ -21,6 +21,18 @@ export type NotificationDeliveryRow = {
   destination: NotificationDestination;
   payload_json: string;
   attempts: number;
+  delivered_at?: string | null;
+  last_error?: string | null;
+  created_at?: string;
+  updated_at?: string;
+};
+
+export type OperationalFailure = {
+  category: "job" | "notion" | "mqtt" | "notification";
+  job_id: string;
+  title: string | null;
+  message: string;
+  occurred_at: string;
 };
 
 export type NotebookPageRow = {
@@ -87,6 +99,7 @@ export class StateStore {
     this.db.exec(`
       CREATE TABLE IF NOT EXISTS jobs (
         job_id TEXT PRIMARY KEY,
+        title TEXT,
         source TEXT NOT NULL,
         transcript_folder TEXT NOT NULL,
         first_seen_at TEXT NOT NULL,
@@ -223,8 +236,24 @@ export class StateStore {
 
       CREATE INDEX IF NOT EXISTS notification_deliveries_pending_idx
         ON notification_deliveries(delivered_at, attempts, id);
+
+      CREATE TABLE IF NOT EXISTS job_state_history (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        job_id TEXT NOT NULL,
+        attempt INTEGER NOT NULL,
+        sidecar_state TEXT NOT NULL,
+        scriberr_status TEXT,
+        error TEXT,
+        occurred_at TEXT NOT NULL
+      );
+
+      CREATE INDEX IF NOT EXISTS job_state_history_job_idx
+        ON job_state_history(job_id, id);
     `);
     const jobColumns = this.db.prepare("PRAGMA table_info(jobs)").all() as Array<{ name: string }>;
+    if (!jobColumns.some((column) => column.name === "title")) {
+      this.db.exec("ALTER TABLE jobs ADD COLUMN title TEXT");
+    }
     if (!jobColumns.some((column) => column.name === "summary_expected")) {
       this.db.exec("ALTER TABLE jobs ADD COLUMN summary_expected INTEGER");
     }
@@ -241,6 +270,15 @@ export class StateStore {
     if (!signalColumns.some((column) => column.name === "error_message")) {
       this.db.exec("ALTER TABLE webhook_signals ADD COLUMN error_message TEXT");
     }
+
+    this.db.prepare(`
+      INSERT INTO job_state_history (job_id, attempt, sidecar_state, scriberr_status, error, occurred_at)
+      SELECT job_id, attempt, sidecar_state, scriberr_status, last_error, updated_at
+      FROM jobs
+      WHERE NOT EXISTS (
+        SELECT 1 FROM job_state_history history WHERE history.job_id = jobs.job_id
+      )
+    `).run();
 
     const readyMigration = this.db.prepare("SELECT value FROM settings WHERE key = 'job_ready_initialized_v1'").get();
     if (!readyMigration) {
@@ -296,22 +334,25 @@ export class StateStore {
     return row?.updated_at;
   }
 
-  discover(jobId: string, folder: string, now: string, source = "filesystem"): { inserted: boolean; job: JobRow } {
+  discover(jobId: string, folder: string, now: string, source = "filesystem", title: string | null = null): { inserted: boolean; job: JobRow } {
     const existing = this.getJob(jobId);
     if (existing) {
       this.db.prepare(`
         UPDATE jobs
-        SET last_seen_at = ?, transcript_folder = CASE WHEN ? <> '' THEN ? ELSE transcript_folder END, updated_at = ?
+        SET last_seen_at = ?, transcript_folder = CASE WHEN ? <> '' THEN ? ELSE transcript_folder END,
+          title = COALESCE(?, title), updated_at = ?
         WHERE job_id = ?
-      `).run(now, folder, folder, now, jobId);
+      `).run(now, folder, folder, title?.trim() || null, now, jobId);
       return { inserted: false, job: this.getJob(jobId)! };
     }
     this.db.prepare(`
-      INSERT INTO jobs (job_id, source, transcript_folder, first_seen_at, last_seen_at,
+      INSERT INTO jobs (job_id, title, source, transcript_folder, first_seen_at, last_seen_at,
         sidecar_state, attempt, created_at, updated_at)
-      VALUES (?, ?, ?, ?, ?, 'discovered', 1, ?, ?)
-    `).run(jobId, source, folder, now, now, now, now);
-    return { inserted: true, job: this.getJob(jobId)! };
+      VALUES (?, ?, ?, ?, ?, ?, 'discovered', 1, ?, ?)
+    `).run(jobId, title?.trim() || null, source, folder, now, now, now, now);
+    const job = this.getJob(jobId)!;
+    this.recordJobState(job, now);
+    return { inserted: true, job };
   }
 
   recordWebhookSignal(deliveryId: string, payload: ScriberrWebhookPayload, receivedAt: string): boolean {
@@ -348,6 +389,92 @@ export class StateStore {
 
   listJobs(): JobRow[] {
     return this.db.prepare("SELECT * FROM jobs ORDER BY first_seen_at").all() as JobRow[];
+  }
+
+  listRecentJobs(page = 1, limit = 10): { jobs: JobRow[]; total: number } {
+    const safeLimit = Math.max(1, Math.min(50, Math.floor(limit)));
+    const safePage = Math.max(1, Math.floor(page));
+    const total = (this.db.prepare("SELECT COUNT(*) AS count FROM jobs").get() as { count: number }).count;
+    const jobs = this.db.prepare(`
+      SELECT * FROM jobs
+      ORDER BY first_seen_at DESC, job_id DESC
+      LIMIT ? OFFSET ?
+    `).all(safeLimit, (safePage - 1) * safeLimit) as JobRow[];
+    return { jobs, total };
+  }
+
+  jobStateHistory(jobId: string): JobStateHistoryRow[] {
+    return this.db.prepare(`
+      SELECT id, job_id, attempt, sidecar_state, scriberr_status, error, occurred_at
+      FROM job_state_history
+      WHERE job_id = ?
+      ORDER BY id DESC
+    `).all(jobId) as JobStateHistoryRow[];
+  }
+
+  recordJobState(job: JobRow, occurredAt = new Date().toISOString()): void {
+    this.db.prepare(`
+      INSERT INTO job_state_history
+        (job_id, attempt, sidecar_state, scriberr_status, error, occurred_at)
+      VALUES (?, ?, ?, ?, ?, ?)
+    `).run(job.job_id, job.attempt, job.sidecar_state, job.scriberr_status, job.last_error ? sanitizeError(job.last_error) : null, occurredAt);
+  }
+
+  jobEvents(jobId: string): Array<{ event_type: string; publish_attempts: number; published_at: string | null; last_error: string | null; created_at: string }> {
+    return this.db.prepare(`
+      SELECT event_type, publish_attempts, published_at, last_error, created_at
+      FROM events WHERE job_id = ? ORDER BY id DESC
+    `).all(jobId) as Array<{ event_type: string; publish_attempts: number; published_at: string | null; last_error: string | null; created_at: string }>;
+  }
+
+  notebookOperations(jobId: string): NotebookOperationRow[] {
+    return this.db.prepare(`
+      SELECT id, job_id, provider, operation_key, operation, attempts, status, last_error,
+        created_at, updated_at, completed_at
+      FROM notebook_operations WHERE job_id = ? ORDER BY id DESC
+    `).all(jobId) as NotebookOperationRow[];
+  }
+
+  notificationDeliveries(jobId: string): NotificationDeliveryRow[] {
+    return this.db.prepare(`
+      SELECT id, job_id, attempt, destination, attempts, delivered_at, last_error, created_at, updated_at
+      FROM notification_deliveries WHERE job_id = ? ORDER BY id DESC
+    `).all(jobId) as NotificationDeliveryRow[];
+  }
+
+  recentOperationalFailures(limit = 8): OperationalFailure[] {
+    return this.db.prepare(`
+      SELECT category, job_id, title, message, occurred_at FROM (
+        SELECT 'job' AS category, job_id, title, last_error AS message, updated_at AS occurred_at
+        FROM jobs WHERE last_error IS NOT NULL
+        UNION ALL
+        SELECT 'notion', operation.job_id, jobs.title, operation.last_error, operation.updated_at
+        FROM notebook_operations operation
+        LEFT JOIN jobs ON jobs.job_id = operation.job_id
+        WHERE operation.status = 'failed' AND operation.last_error IS NOT NULL
+        UNION ALL
+        SELECT 'mqtt', event.job_id, jobs.title, event.last_error, event.created_at
+        FROM events event
+        LEFT JOIN jobs ON jobs.job_id = event.job_id
+        WHERE event.published_at IS NULL AND event.last_error IS NOT NULL
+        UNION ALL
+        SELECT 'notification', delivery.job_id, jobs.title, delivery.last_error, delivery.updated_at
+        FROM notification_deliveries delivery
+        LEFT JOIN jobs ON jobs.job_id = delivery.job_id
+        WHERE delivery.delivered_at IS NULL AND delivery.attempts >= 3 AND delivery.last_error IS NOT NULL
+      ) ORDER BY occurred_at DESC LIMIT ?
+    `).all(Math.max(1, Math.min(50, Math.floor(limit)))) as OperationalFailure[];
+  }
+
+  destinationFailureCounts(): { notion: number; mqtt: number; notifications: number } {
+    const notion = (this.db.prepare(`
+      SELECT COUNT(*) AS count FROM notebook_operations operation
+      WHERE operation.status = 'failed'
+        AND operation.id IN (SELECT MAX(latest.id) FROM notebook_operations latest GROUP BY latest.job_id)
+    `).get() as { count: number }).count;
+    const mqtt = (this.db.prepare("SELECT COUNT(*) AS count FROM events WHERE published_at IS NULL AND last_error IS NOT NULL").get() as { count: number }).count;
+    const notifications = (this.db.prepare("SELECT COUNT(*) AS count FROM notification_deliveries WHERE delivered_at IS NULL AND attempts >= 3").get() as { count: number }).count;
+    return { notion, mqtt, notifications };
   }
 
   jobStateCounts(): Array<{ sidecar_state: string; count: number }> {
@@ -397,7 +524,9 @@ export class StateStore {
       last_error = NULL,
       updated_at = ?
       WHERE job_id = ?`).run(now, jobId);
-    return this.getJob(jobId)!;
+    const job = this.getJob(jobId)!;
+    this.recordJobState(job, now);
+    return job;
   }
 
   ensureEvent(job: JobRow, eventType: string, payload: object): boolean {

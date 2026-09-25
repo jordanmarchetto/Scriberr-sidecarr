@@ -21,6 +21,7 @@ test("event ledger deduplicates within an attempt and permits a rerun attempt", 
     const events = db.pendingEvents();
     assert.equal(events.length, 2);
     assert.equal(events[1].occurrence_key, "2:transcription_complete");
+    assert.deepEqual(db.jobStateHistory(discovered.job.job_id).map((entry) => entry.attempt), [2, 1]);
   } finally {
     db.close();
     rmSync(directory, { recursive: true, force: true });
@@ -58,6 +59,31 @@ test("unprocessed webhook signals survive a database restart", () => {
     if (db) {
       try { db.close(); } catch {}
     }
+    rmSync(directory, { recursive: true, force: true });
+  }
+});
+
+test("operations queries paginate recent jobs and retain state history", () => {
+  const directory = mkdtempSync(path.join(tmpdir(), "scriberr-sidecarr-operations-"));
+  const db = new StateStore(path.join(directory, "state.db"));
+  try {
+    for (let index = 1; index <= 12; index += 1) {
+      const jobId = `job-${String(index).padStart(2, "0")}`;
+      db.discover(jobId, "", `2026-09-24T12:${String(index).padStart(2, "0")}:00Z`, "webhook", `Recording ${index}`);
+    }
+    const first = db.listRecentJobs(1, 10);
+    const second = db.listRecentJobs(2, 10);
+    assert.equal(first.total, 12);
+    assert.equal(first.jobs.length, 10);
+    assert.equal(first.jobs[0]?.job_id, "job-12");
+    assert.deepEqual(second.jobs.map((job) => job.job_id), ["job-02", "job-01"]);
+
+    const job = db.getJob("job-12")!;
+    db.updateJob(job.job_id, { sidecar_state: "processing_transcription", scriberr_status: "processing" });
+    db.recordJobState(db.getJob(job.job_id)!, "2026-09-24T13:00:00Z");
+    assert.deepEqual(db.jobStateHistory(job.job_id).map((entry) => entry.sidecar_state), ["processing_transcription", "discovered"]);
+  } finally {
+    db.close();
     rmSync(directory, { recursive: true, force: true });
   }
 });

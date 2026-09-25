@@ -5,7 +5,10 @@ import pino from "pino";
 import { safeSettingsSnapshot, settingRegistry, type Config, type SettingDefinition, type SettingKey, type SettingSource } from "./config.js";
 import { ConfigurationConflictError, ConfigurationManager } from "./configuration-manager.js";
 import { BrowserAuthError, ScriberrBrowserAuth, type BrowserAuthentication } from "./browser-auth.js";
+import { StateStore } from "./db.js";
 import { sanitizeError } from "./errors.js";
+import type { ScriberrReadinessStatus } from "./scriberr-readiness.js";
+import type { JobRow, SidecarState } from "./types.js";
 
 const maxApiBodyBytes = 64 * 1024;
 const settingsGroups = ["scriberr", "discovery", "notion", "mqtt", "notifications", "summaries"] as const;
@@ -27,6 +30,20 @@ type SetupState = {
   source: SettingSource;
 };
 
+type OperationsStatus = {
+  scriberr: ScriberrReadinessStatus;
+  discoveryMode: "webhook" | "filesystem";
+};
+
+const activeJobStates = new Set<SidecarState>([
+  "discovered",
+  "pending_transcription",
+  "processing_transcription",
+  "transcription_complete",
+  "summary_pending",
+  "summary_processing"
+]);
+
 export class UiServer {
   readonly basePath: string;
 
@@ -35,6 +52,8 @@ export class UiServer {
     private readonly configuration: ConfigurationManager,
     private readonly auth: ScriberrBrowserAuth,
     private readonly logger: pino.Logger,
+    private readonly db: StateStore,
+    private readonly operationsStatus: () => OperationsStatus = () => ({ scriberr: "waiting", discoveryMode: "filesystem" }),
     private readonly assetsPath = path.resolve("ui-dist")
   ) {
     this.basePath = config().uiBasePath;
@@ -51,6 +70,19 @@ export class UiServer {
     }
     if (url.pathname === `${this.basePath}/api/settings`) {
       await this.settings(request, response);
+      return true;
+    }
+    if (url.pathname === `${this.basePath}/api/operations/overview`) {
+      await this.operationsOverview(request, response);
+      return true;
+    }
+    if (url.pathname === `${this.basePath}/api/jobs`) {
+      await this.jobs(request, response, url);
+      return true;
+    }
+    const jobMatch = url.pathname.match(new RegExp(`^${this.basePath}/api/jobs/([^/]+)$`));
+    if (jobMatch) {
+      await this.jobDetails(request, response, jobMatch[1]);
       return true;
     }
     const settingsGroup = url.pathname.match(new RegExp(`^${this.basePath}/api/settings/([^/]+)$`))?.[1];
@@ -198,6 +230,189 @@ export class UiServer {
       this.logger.warn({ group: groupName, status, error: sanitizeError(error) }, "Sidecarr settings update failed");
       this.respondJson(response, status, { error: message, ...(status === 409 ? { revision: this.configuration.revision } : {}) });
     }
+  }
+
+  private async operationsOverview(request: IncomingMessage, response: ServerResponse): Promise<void> {
+    if (!this.getRequest(request, response)) return;
+    const authentication = await this.authenticated(request, response);
+    if (!authentication) return;
+    const config = this.config();
+    const runtime = this.operationsStatus();
+    const failures = this.db.destinationFailureCounts();
+    const status = (enabled: boolean, failed: boolean): "disabled" | "healthy" | "needs_attention" => {
+      if (!enabled) return "disabled";
+      return failed ? "needs_attention" : "healthy";
+    };
+    this.respondJson(response, 200, {
+      health: [
+        {
+          key: "scriberr",
+          label: "Scriberr",
+          status: runtime.scriberr === "ready" ? "healthy" : runtime.scriberr === "configuration_required" ? "paused" : "needs_attention",
+          detail: runtime.scriberr === "ready" ? "Background connection is ready." : `Background status: ${runtime.scriberr}.`
+        },
+        {
+          key: "discovery",
+          label: "Discovery",
+          status: "healthy",
+          detail: `${runtime.discoveryMode === "webhook" ? "Webhook" : "Filesystem"} discovery is active.`
+        },
+        {
+          key: "notion",
+          label: "Notion",
+          status: status(config.notebookProvider === "notion", failures.notion > 0),
+          detail: config.notebookProvider === "notion" ? "Notebook publishing is enabled." : "Not configured."
+        },
+        {
+          key: "mqtt",
+          label: "MQTT",
+          status: status(Boolean(config.mqttUrl), failures.mqtt > 0),
+          detail: config.mqttUrl ? "Lifecycle publishing is enabled." : "Not configured."
+        },
+        {
+          key: "notifications",
+          label: "Notifications",
+          status: status(Boolean(config.notificationWebhookUrl || config.smtpUrl), failures.notifications > 0),
+          detail: config.notificationWebhookUrl || config.smtpUrl ? "Job-ready notifications are enabled." : "Not configured."
+        }
+      ],
+      recentFailures: this.db.recentOperationalFailures().map((failure) => ({
+        category: failure.category,
+        jobId: failure.job_id,
+        title: failure.title ?? `Scriberr job ${failure.job_id}`,
+        message: sanitizeError(failure.message),
+        occurredAt: failure.occurred_at
+      }))
+    });
+  }
+
+  private async jobs(request: IncomingMessage, response: ServerResponse, url: URL): Promise<void> {
+    if (!this.getRequest(request, response)) return;
+    const authentication = await this.authenticated(request, response);
+    if (!authentication) return;
+    const page = this.positiveInteger(url.searchParams.get("page"), 1);
+    const limit = Math.min(this.positiveInteger(url.searchParams.get("limit"), 10), 50);
+    const result = this.db.listRecentJobs(page, limit);
+    this.respondJson(response, 200, {
+      jobs: result.jobs.map((job) => this.safeJob(job)),
+      pagination: {
+        page,
+        limit,
+        total: result.total,
+        pages: Math.max(1, Math.ceil(result.total / limit))
+      }
+    });
+  }
+
+  private async jobDetails(request: IncomingMessage, response: ServerResponse, encodedJobId: string): Promise<void> {
+    if (!this.getRequest(request, response)) return;
+    const authentication = await this.authenticated(request, response);
+    if (!authentication) return;
+    let jobId: string;
+    try {
+      jobId = decodeURIComponent(encodedJobId);
+    } catch {
+      this.respondJson(response, 400, { error: "invalid job ID" });
+      return;
+    }
+    const job = this.db.getJob(jobId);
+    if (!job) {
+      this.respondJson(response, 404, { error: "job not found" });
+      return;
+    }
+    const notion = this.db.getNotebookPage(jobId, "notion");
+    const notionOperations = this.db.notebookOperations(jobId);
+    const notionStatus = notionOperations.some((operation) => operation.status === "failed")
+      ? "needs attention"
+      : notion?.last_status ? "synchronized" : "pending";
+    this.respondJson(response, 200, {
+      job: this.safeJob(job),
+      links: {
+        scriberr: `${this.config().scriberrPublicUrl}/audio/${encodeURIComponent(jobId)}`,
+        notion: notion?.page_url ?? null
+      },
+      history: this.db.jobStateHistory(jobId).map((entry) => ({
+        attempt: entry.attempt,
+        state: entry.sidecar_state,
+        scriberrStatus: entry.scriberr_status,
+        error: entry.error ? sanitizeError(entry.error) : null,
+        occurredAt: entry.occurred_at
+      })),
+      destinations: {
+        notion: notion ? {
+          status: notionStatus,
+          audioStatus: notion.audio_state,
+          currentAttempt: notion.current_attempt,
+          updatedAt: notion.updated_at,
+          operations: notionOperations.map((operation) => ({
+            operation: operation.operation,
+            status: operation.status,
+            attempts: operation.attempts,
+            error: operation.last_error ? sanitizeError(operation.last_error) : null,
+            updatedAt: operation.updated_at,
+            completedAt: operation.completed_at
+          }))
+        } : null,
+        mqtt: this.db.jobEvents(jobId).map((event) => ({
+          event: event.event_type,
+          status: event.published_at ? "delivered" : event.last_error ? "failed" : "pending",
+          attempts: event.publish_attempts,
+          error: event.last_error ? sanitizeError(event.last_error) : null,
+          createdAt: event.created_at,
+          deliveredAt: event.published_at
+        })),
+        notifications: this.db.notificationDeliveries(jobId).map((delivery) => ({
+          attempt: delivery.attempt,
+          destination: delivery.destination,
+          status: delivery.delivered_at ? "delivered" : delivery.attempts >= 3 ? "failed" : "pending",
+          attempts: delivery.attempts,
+          error: delivery.last_error ? sanitizeError(delivery.last_error) : null,
+          createdAt: delivery.created_at,
+          deliveredAt: delivery.delivered_at
+        }))
+      }
+    });
+  }
+
+  private safeJob(job: JobRow): object {
+    return {
+      id: job.job_id,
+      title: job.title ?? `Scriberr job ${job.job_id}`,
+      source: job.source,
+      state: job.sidecar_state,
+      scriberrStatus: job.scriberr_status,
+      status: this.displayStatus(job),
+      active: activeJobStates.has(job.sidecar_state),
+      attempt: job.attempt,
+      outcome: job.job_ready_outcome,
+      firstSeenAt: job.first_seen_at,
+      lastSeenAt: job.last_seen_at,
+      lastCheckedAt: job.last_checked_at,
+      updatedAt: job.updated_at,
+      readyAt: job.job_ready_at,
+      error: job.last_error ? sanitizeError(job.last_error) : null
+    };
+  }
+
+  private displayStatus(job: JobRow): string {
+    if (job.sidecar_state === "job_ready") return job.job_ready_outcome === "ready_with_warnings" ? "Ready with warnings" : "Ready";
+    if (job.sidecar_state === "transcription_failed" || job.sidecar_state === "summary_failed") return "Failed";
+    if (job.sidecar_state === "processing_transcription") return "Transcribing";
+    if (["transcription_complete", "summary_pending", "summary_processing", "summary_complete"].includes(job.sidecar_state)) return "Generating summary";
+    return "Waiting";
+  }
+
+  private getRequest(request: IncomingMessage, response: ServerResponse): boolean {
+    if (request.method === "GET") return true;
+    response.setHeader("Allow", "GET");
+    this.respondJson(response, 405, { error: "method not allowed" });
+    return false;
+  }
+
+  private positiveInteger(value: string | null, fallback: number): number {
+    if (!value) return fallback;
+    const parsed = Number(value);
+    return Number.isInteger(parsed) && parsed > 0 ? parsed : fallback;
   }
 
   private settingsPayload(): object {

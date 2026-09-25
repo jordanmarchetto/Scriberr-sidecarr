@@ -259,6 +259,7 @@ test("creates and progressively updates a page without touching user Notes", asy
     const page = value.db.getNotebookPage(jobId, "notion");
     assert.ok(page);
     const topLevel = await value.notion.children(page.page_id);
+    assert.match(JSON.stringify(topLevel), new RegExp(`/sidecarr/jobs/${jobId}`));
     const openInScriberr = topLevel.find((block) => blockText(block) === "Open in Scriberr");
     const details = topLevel.find((block) => blockText(block) === "Details");
     assert.ok(openInScriberr);
@@ -294,6 +295,7 @@ test("creates and progressively updates a page without touching user Notes", asy
     assert.equal(value.api.summaryLookups, 0);
     assert.equal(value.notion.findBlockForTest(userNote.id)?.in_trash, undefined);
     assert.doesNotMatch(JSON.stringify([...first, ...completed]), /hello|useful item|notion-secret/);
+    assert.equal((await value.notion.children(page.page_id)).filter((block) => blockText(block) === "Manage in Sidecarr").length, 1);
 
     const transcriptBlocks = await value.notion.children(page.transcript_page_id);
     assert.ok(transcriptBlocks.some((block) => blockText(block).includes("Speaker 1")));

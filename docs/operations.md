@@ -26,6 +26,14 @@ Repeated connection-level retry warnings are limited to one per minute during an
 
 Logs contain identifiers and state metadata, but not configured credentials, transcript or summary text, or audio.
 
+## Troubleshooting in the UI
+
+Open `/sidecarr` and use Overview for dependency health and recent actionable failures. Select a failure or open Jobs to inspect a recording's state history, processing attempts, Notion operations, MQTT publication, and notification delivery. The job page links back to Scriberr and to the managed Notion page when one exists.
+
+The UI is deliberately read-only. Use Scriberr for processing actions, and use Docker logs for request-level detail that does not belong in the browser. Errors shown in the UI are sanitized; transcript, summary, credential, and raw delivery payloads are not exposed by its APIs.
+
+For an actively processing job, leave its detail page visible to receive a slow automatic refresh. Hidden browser tabs stop polling. Manual refresh is always available.
+
 ## Releases
 
 Pushes to `main` publish `latest` and commit-SHA image tags. A tag such as `v0.2.0` publishes `0.2.0` and `0.2` images.

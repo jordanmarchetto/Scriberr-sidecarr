@@ -1,6 +1,14 @@
 # Sidecarr UI
 
-The optional UI is served at `/sidecarr` by the same listener that receives Scriberr webhooks. It provides authenticated connection setup, behavioral settings, responsive navigation, and light/dark themes. Read-only job details arrive in a later checkpoint.
+The optional UI is served at `/sidecarr` by the same listener that receives Scriberr webhooks. It provides authenticated connection setup, behavioral settings, operational health, recent jobs, responsive navigation, and light/dark themes.
+
+## Operations and jobs
+
+The Overview page reports the current Scriberr connection, effective discovery mode, configured destinations, and recent failures. The Jobs page shows the ten most recently discovered jobs at a time. Each job has a stable `/sidecarr/jobs/<scriberr-job-id>` route with its current state, attempt history, destination outcomes, notification delivery status, and sanitized errors.
+
+Job details are read-only. Transcription, summary, retry, resend, and correction actions remain in Scriberr or a later Sidecarr checkpoint. Active job pages refresh slowly while the page is visible; background tabs do not poll. Managed Notion pages include a permanent **Manage in Sidecarr** link to the same job route.
+
+The operations APIs never return credentials, transcripts, summaries, notification payloads, MQTT payloads, or raw remote responses. The browser-facing Scriberr URL is also the origin used for Sidecarr job links; it may be a private LAN or VPN address and does not need to be internet-public.
 
 ## Settings
 

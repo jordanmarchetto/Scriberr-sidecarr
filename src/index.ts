@@ -73,7 +73,14 @@ try {
     configuration.registerActivator(behavior, activateRuntime);
   }
   const auth = new ScriberrBrowserAuth(() => configuration.current.config);
-  const ui = new UiServer(() => configuration.current.config, configuration, auth, logger);
+  const ui = new UiServer(
+    () => configuration.current.config,
+    configuration,
+    auth,
+    logger,
+    db,
+    () => ({ scriberr: configuration.current.canProcess ? runtime.status : "configuration_required", discoveryMode: runtime.discoveryMode })
+  );
   const receiver = new WebhookReceiver(
     () => ({ ...configuration.current.config, webhookSecret: runtime.webhookSecret }),
     db,

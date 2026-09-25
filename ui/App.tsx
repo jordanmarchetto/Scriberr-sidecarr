@@ -1,6 +1,7 @@
-import { type FormEvent, useCallback, useEffect, useMemo, useState } from "react";
+import { type FormEvent, type ReactNode, useCallback, useEffect, useMemo, useState } from "react";
 
 type Page = "overview" | "jobs" | "settings";
+type Route = { page: Page; jobId?: string };
 type Theme = "light" | "dark";
 type Session = {
   authenticated: true;
@@ -37,13 +38,85 @@ type SettingsPayload = {
   restartRequired?: boolean;
   activationError?: string;
 };
+type HealthStatus = "healthy" | "disabled" | "needs_attention" | "paused";
+type OperationsPayload = {
+  health: Array<{ key: string; label: string; status: HealthStatus; detail: string }>;
+  recentFailures: Array<{ category: string; jobId: string; title: string; message: string; occurredAt: string }>;
+};
+type JobSummary = {
+  id: string;
+  title: string;
+  source: string;
+  state: string;
+  scriberrStatus: string | null;
+  status: string;
+  active: boolean;
+  attempt: number;
+  outcome: string | null;
+  firstSeenAt: string;
+  lastSeenAt: string | null;
+  lastCheckedAt: string | null;
+  updatedAt: string;
+  readyAt: string | null;
+  error: string | null;
+};
+type JobsPayload = {
+  jobs: JobSummary[];
+  pagination: { page: number; limit: number; total: number; pages: number };
+};
+type OperationOutcome = {
+  attempt?: number;
+  operation?: string;
+  event?: string;
+  destination?: string;
+  status: string;
+  attempts: number;
+  error: string | null;
+  updatedAt?: string;
+  createdAt?: string;
+  completedAt?: string | null;
+  deliveredAt?: string | null;
+};
+type JobDetailsPayload = {
+  job: JobSummary;
+  links: { scriberr: string; notion: string | null };
+  history: Array<{ attempt: number; state: string; scriberrStatus: string | null; error: string | null; occurredAt: string }>;
+  destinations: {
+    notion: null | { status: string; audioStatus: string; currentAttempt: number; updatedAt: string; operations: OperationOutcome[] };
+    mqtt: OperationOutcome[];
+    notifications: OperationOutcome[];
+  };
+};
 
 const basePath = document.querySelector<HTMLMetaElement>('meta[name="sidecarr-base"]')?.content.replace(/\/$/, "") || "/sidecarr";
 const scriberrLinkHint = "Open Scriberr. You may need to sign in again.";
 
-function pageFromPath(): Page {
+function routeFromPath(): Route {
   const route = window.location.pathname.slice(basePath.length).replace(/^\/+|\/+$/g, "");
-  return route === "jobs" || route === "settings" ? route : "overview";
+  if (route === "settings") return { page: "settings" };
+  if (route === "jobs") return { page: "jobs" };
+  if (route.startsWith("jobs/")) {
+    try {
+      return { page: "jobs", jobId: decodeURIComponent(route.slice("jobs/".length)) };
+    } catch {
+      return { page: "jobs" };
+    }
+  }
+  return { page: "overview" };
+}
+
+function formatTime(value: string | null | undefined): string {
+  if (!value) return "—";
+  const date = new Date(value);
+  return Number.isNaN(date.getTime()) ? value : date.toLocaleString();
+}
+
+function statusTone(status: string): "success" | "warning" | "danger" | "muted" {
+  const normalized = status.toLowerCase();
+  if (normalized.includes("fail") || normalized.includes("attention")) return "danger";
+  if (normalized.includes("warning") || normalized.includes("paused")) return "warning";
+  if (["ready", "healthy", "succeeded", "synchronized", "delivered"].some((value) => normalized.includes(value))) return "success";
+  return "muted";
 }
 
 async function scriberrToken(): Promise<string | null> {
@@ -71,7 +144,7 @@ async function scriberrToken(): Promise<string | null> {
 }
 
 export function App() {
-  const [page, setPage] = useState<Page>(pageFromPath);
+  const [route, setRoute] = useState<Route>(routeFromPath);
   const [token, setToken] = useState<string | null>(null);
   const [session, setSession] = useState<Session | null>(null);
   const [authState, setAuthState] = useState<"loading" | "login" | "unavailable" | "ready">("loading");
@@ -119,14 +192,15 @@ export function App() {
     localStorage.setItem("sidecarr-theme", theme);
   }, [theme]);
   useEffect(() => {
-    const update = () => setPage(pageFromPath());
+    const update = () => setRoute(routeFromPath());
     window.addEventListener("popstate", update);
     return () => window.removeEventListener("popstate", update);
   }, []);
 
-  const navigate = (next: Page) => {
-    window.history.pushState({}, "", `${basePath}${next === "overview" ? "" : `/${next}`}`);
-    setPage(next);
+  const navigate = (next: Page, jobId?: string) => {
+    const suffix = next === "overview" ? "" : `/${next}${jobId ? `/${encodeURIComponent(jobId)}` : ""}`;
+    window.history.pushState({}, "", `${basePath}${suffix}`);
+    setRoute({ page: next, ...(jobId ? { jobId } : {}) });
   };
 
   const logout = async () => {
@@ -152,9 +226,9 @@ export function App() {
       <aside className="sidebar">
         <Brand />
         <nav aria-label="Primary navigation">
-          <NavButton active={page === "overview"} label="Overview" icon="◫" onClick={() => navigate("overview")} />
-          <NavButton active={page === "jobs"} label="Jobs" icon="≡" onClick={() => navigate("jobs")} />
-          <NavButton active={page === "settings"} label="Settings" icon="⚙" onClick={() => navigate("settings")} />
+          <NavButton active={route.page === "overview"} label="Overview" icon="◫" onClick={() => navigate("overview")} />
+          <NavButton active={route.page === "jobs"} label="Jobs" icon="≡" onClick={() => navigate("jobs")} />
+          <NavButton active={route.page === "settings"} label="Settings" icon="⚙" onClick={() => navigate("settings")} />
         </nav>
         <div className="sidebar-footer">
           <a className="nav-button" href={session?.scriberrUrl ?? "/"} title={scriberrLinkHint}><span>↗</span>Open Scriberr</a>
@@ -165,15 +239,15 @@ export function App() {
       <main>
         <header className="mobile-header"><Brand /><div className="header-actions"><a className="icon-button" aria-label={scriberrLinkHint} title={scriberrLinkHint} href={session?.scriberrUrl ?? "/"}>↗</a><button className="icon-button" aria-label="Toggle theme" onClick={() => setTheme(theme === "dark" ? "light" : "dark")}>{theme === "dark" ? "☀" : "☾"}</button><button className="icon-button" aria-label="Sign out" onClick={() => void logout()}>⇥</button></div></header>
         <div className="content">
-          {page === "overview" && <Overview session={session!} token={token!} reload={() => loadSession(token)} />}
-          {page === "jobs" && <Placeholder title="Jobs" message="Job history and processing details arrive in the operations checkpoint." />}
-          {page === "settings" && <Settings token={token!} />}
+          {route.page === "overview" && <Overview session={session!} token={token!} reload={() => loadSession(token)} openJob={(jobId) => navigate("jobs", jobId)} />}
+          {route.page === "jobs" && <Jobs token={token!} jobId={route.jobId} openJob={(jobId) => navigate("jobs", jobId)} back={() => navigate("jobs")} />}
+          {route.page === "settings" && <Settings token={token!} />}
         </div>
       </main>
       <nav className="bottom-nav" aria-label="Mobile navigation">
-        <NavButton active={page === "overview"} label="Overview" icon="◫" onClick={() => navigate("overview")} />
-        <NavButton active={page === "jobs"} label="Jobs" icon="≡" onClick={() => navigate("jobs")} />
-        <NavButton active={page === "settings"} label="Settings" icon="⚙" onClick={() => navigate("settings")} />
+        <NavButton active={route.page === "overview"} label="Overview" icon="◫" onClick={() => navigate("overview")} />
+        <NavButton active={route.page === "jobs"} label="Jobs" icon="≡" onClick={() => navigate("jobs")} />
+        <NavButton active={route.page === "settings"} label="Settings" icon="⚙" onClick={() => navigate("settings")} />
         <a className="nav-button" href={session?.scriberrUrl ?? "/"} title={scriberrLinkHint}><span>↗</span>Scriberr</a>
       </nav>
     </div>
@@ -188,14 +262,29 @@ function NavButton({ active, label, icon, onClick }: { active: boolean; label: s
   return <button className={`nav-button${active ? " active" : ""}`} aria-current={active ? "page" : undefined} onClick={onClick}><span>{icon}</span>{label}</button>;
 }
 
-function Overview({ session, token, reload }: { session: Session; token: string; reload: () => void }) {
+function Overview({ session, token, reload, openJob }: { session: Session; token: string; reload: () => void; openJob: (jobId: string) => void }) {
   const [working, setWorking] = useState(false);
   const [message, setMessage] = useState("");
+  const [operations, setOperations] = useState<OperationsPayload | null>(null);
+  const [operationsError, setOperationsError] = useState("");
   const setupText = useMemo(() => {
     if (session.setup.credentialStatus === "unavailable") return "The worker credential could not be checked.";
     if (session.setup.credentialStatus === "invalid") return "The worker credential was rejected by Scriberr.";
     return "Sidecarr needs a dedicated API key for unattended processing.";
   }, [session]);
+
+  const loadOperations = useCallback(async () => {
+    setOperationsError("");
+    try {
+      const response = await fetch(`${basePath}/api/operations/overview`, { headers: { Authorization: `Bearer ${token}` } });
+      if (!response.ok) throw new Error(`Overview request failed with HTTP ${response.status}`);
+      setOperations(await response.json() as OperationsPayload);
+    } catch (error) {
+      setOperationsError(error instanceof Error ? error.message : "Unable to load operational status");
+    }
+  }, [token]);
+
+  useEffect(() => { void loadOperations(); }, [loadOperations]);
 
   const connect = async () => {
     setWorking(true);
@@ -218,9 +307,7 @@ function Overview({ session, token, reload }: { session: Session; token: string;
 
   return (
     <section>
-      <div className="eyebrow">Control center</div>
-      <h1>Overview</h1>
-      <p className="lede">Sidecarr is connected to your Scriberr workspace.</p>
+      <div className="page-heading"><div><div className="eyebrow">Control center</div><h1>Overview</h1><p className="lede">Current background processing and destination health.</p></div><button className="secondary-button" onClick={() => void loadOperations()}>Refresh</button></div>
       {session.setup.required && (
         <article className="setup-card">
           <div><span className="status-dot warning" /><strong>Background connection needed</strong><p>{setupText}</p></div>
@@ -230,17 +317,166 @@ function Overview({ session, token, reload }: { session: Session; token: string;
           {message && <p className="form-message">{message}</p>}
         </article>
       )}
-      <div className="card-grid">
-        <StatusCard label="UI status" value="Ready" detail="Your Scriberr session is authenticated." />
-        <StatusCard label="Worker connection" value={session.setup.credentialStatus === "valid" ? "Connected" : "Needs attention"} detail={`Source: ${session.setup.source}`} warning={session.setup.credentialStatus !== "valid"} />
-        <article className="card"><span className="card-label">Next checkpoint</span><strong>Settings</strong><p>Manage behavioral configuration without editing the environment.</p></article>
+      {operationsError && <div className="error-banner" role="alert">{operationsError}</div>}
+      <div className="health-grid">
+        {operations?.health.map((item) => <StatusCard key={item.key} label={item.label} value={item.status.replaceAll("_", " ")} detail={item.detail} tone={statusTone(item.status)} />)}
+      </div>
+      <div className="section-heading"><div><h2>Recent failures</h2><p>Failures that may need investigation. Recovery actions remain in Scriberr for now.</p></div></div>
+      {!operations ? <div className="loading-row"><span className="spinner" />Loading operational status…</div>
+        : operations.recentFailures.length === 0 ? <article className="compact-empty"><strong>No recent failures</strong><p>Sidecarr has no recent operational errors to show.</p></article>
+          : <div className="failure-list">{operations.recentFailures.map((failure) => (
+            <button key={`${failure.category}-${failure.jobId}-${failure.occurredAt}`} className="failure-row" onClick={() => openJob(failure.jobId)}>
+              <span className="status-badge danger">{failure.category}</span><span><strong>{failure.title}</strong><small>{failure.message}</small></span><time>{formatTime(failure.occurredAt)}</time><b aria-hidden="true">›</b>
+            </button>
+          ))}</div>}
+    </section>
+  );
+}
+
+function StatusCard({ label, value, detail, tone }: { label: string; value: string; detail: string; tone: "success" | "warning" | "danger" | "muted" }) {
+  return <article className="card health-card"><span className="card-label">{label}</span><strong><span className={`status-dot ${tone}`} />{value}</strong><p>{detail}</p></article>;
+}
+
+function Jobs({ token, jobId, openJob, back }: { token: string; jobId?: string; openJob: (jobId: string) => void; back: () => void }) {
+  if (jobId) return <JobDetails token={token} jobId={jobId} back={back} />;
+  return <JobsList token={token} openJob={openJob} />;
+}
+
+function JobsList({ token, openJob }: { token: string; openJob: (jobId: string) => void }) {
+  const [page, setPage] = useState(1);
+  const [payload, setPayload] = useState<JobsPayload | null>(null);
+  const [error, setError] = useState("");
+
+  const load = useCallback(async () => {
+    setError("");
+    try {
+      const response = await fetch(`${basePath}/api/jobs?page=${page}&limit=10`, { headers: { Authorization: `Bearer ${token}` } });
+      if (!response.ok) throw new Error(`Jobs request failed with HTTP ${response.status}`);
+      setPayload(await response.json() as JobsPayload);
+    } catch (loadError) {
+      setError(loadError instanceof Error ? loadError.message : "Unable to load jobs");
+    }
+  }, [page, token]);
+
+  useEffect(() => { void load(); }, [load]);
+
+  return (
+    <section>
+      <div className="page-heading"><div><div className="eyebrow">Operations</div><h1>Jobs</h1><p className="lede">The most recently discovered Scriberr jobs.</p></div><button className="secondary-button" onClick={() => void load()}>Refresh</button></div>
+      {error && <div className="error-banner" role="alert">{error}</div>}
+      {!payload ? <div className="loading-row"><span className="spinner" />Loading jobs…</div>
+        : payload.jobs.length === 0 ? <article className="empty-state"><span>◌</span><h2>No jobs yet</h2><p>New Scriberr recordings will appear here after Sidecarr discovers them.</p></article>
+          : <>
+            <div className="jobs-list">
+              <div className="jobs-header"><span>Recording</span><span>Status</span><span>Discovered</span><span>Activity</span><span /></div>
+              {payload.jobs.map((job) => <button key={job.id} className="job-row" onClick={() => openJob(job.id)}>
+                <span className="job-title"><strong>{job.title}</strong><small>{job.id}</small></span>
+                <span><span className={`status-badge ${statusTone(job.status)}`}>{job.status}</span></span>
+                <time>{formatTime(job.firstSeenAt)}</time>
+                <time>{formatTime(job.updatedAt)}</time>
+                <b aria-hidden="true">›</b>
+              </button>)}
+            </div>
+            <div className="pagination"><button className="secondary-button" disabled={page <= 1} onClick={() => setPage((current) => current - 1)}>← Newer</button><span>Page {payload.pagination.page} of {payload.pagination.pages} · {payload.pagination.total} jobs</span><button className="secondary-button" disabled={page >= payload.pagination.pages} onClick={() => setPage((current) => current + 1)}>Older →</button></div>
+          </>}
+    </section>
+  );
+}
+
+function JobDetails({ token, jobId, back }: { token: string; jobId: string; back: () => void }) {
+  const [payload, setPayload] = useState<JobDetailsPayload | null>(null);
+  const [error, setError] = useState("");
+  const [refreshing, setRefreshing] = useState(false);
+
+  const load = useCallback(async (quiet = false) => {
+    if (!quiet) setRefreshing(true);
+    setError("");
+    try {
+      const response = await fetch(`${basePath}/api/jobs/${encodeURIComponent(jobId)}`, { headers: { Authorization: `Bearer ${token}` } });
+      if (!response.ok) throw new Error(response.status === 404 ? "This job is not tracked by Sidecarr." : `Job request failed with HTTP ${response.status}`);
+      setPayload(await response.json() as JobDetailsPayload);
+    } catch (loadError) {
+      setError(loadError instanceof Error ? loadError.message : "Unable to load job details");
+    } finally {
+      setRefreshing(false);
+    }
+  }, [jobId, token]);
+
+  useEffect(() => { void load(); }, [load]);
+  useEffect(() => {
+    if (!payload?.job.active) return;
+    const refreshIfVisible = () => { if (document.visibilityState === "visible") void load(true); };
+    const interval = window.setInterval(refreshIfVisible, 30_000);
+    document.addEventListener("visibilitychange", refreshIfVisible);
+    return () => {
+      window.clearInterval(interval);
+      document.removeEventListener("visibilitychange", refreshIfVisible);
+    };
+  }, [load, payload?.job.active]);
+
+  if (!payload && !error) return <CenteredState title="Loading job" message="Reading Sidecarr's operational history…" />;
+  if (!payload) return <section><button className="back-button" onClick={back}>← Jobs</button><article className="empty-state"><h2>Job unavailable</h2><p>{error}</p><button className="primary-button" onClick={() => void load()}>Try again</button></article></section>;
+  const { job } = payload;
+  return (
+    <section>
+      <button className="back-button" onClick={back}>← Jobs</button>
+      <div className="page-heading job-heading"><div><div className="eyebrow">Job details</div><h1>{job.title}</h1><p className="job-id">{job.id}</p></div><div className="heading-actions"><span className={`status-badge large ${statusTone(job.status)}`}>{job.status}</span><button className="secondary-button" disabled={refreshing} onClick={() => void load()}>{refreshing ? "Refreshing…" : "Refresh"}</button></div></div>
+      {error && <div className="error-banner" role="alert">{error}</div>}
+      {job.error && <div className="error-banner"><strong>Latest error</strong><span>{job.error}</span></div>}
+      <div className="detail-links"><a className="primary-button link-button" href={payload.links.scriberr}>Open in Scriberr ↗</a>{payload.links.notion && <a className="secondary-button link-button" href={payload.links.notion}>Open in Notion ↗</a>}</div>
+      <div className="detail-grid">
+        <DetailValue label="Attempt" value={String(job.attempt)} />
+        <DetailValue label="Source" value={job.source} />
+        <DetailValue label="Discovered" value={formatTime(job.firstSeenAt)} />
+        <DetailValue label="Last activity" value={formatTime(job.updatedAt)} />
+        <DetailValue label="Last checked" value={formatTime(job.lastCheckedAt)} />
+        <DetailValue label="Ready at" value={formatTime(job.readyAt)} />
+        <DetailValue label="Scriberr status" value={job.scriberrStatus ?? "Unknown"} />
+        <DetailValue label="Sidecarr state" value={job.state.replaceAll("_", " ")} />
+        <DetailValue label="Outcome" value={job.outcome?.replaceAll("_", " ") ?? "—"} />
+      </div>
+
+      <OperationsSection title="State history" empty="No state history is available.">
+        {payload.history.map((entry, index) => <div className="timeline-row" key={`${entry.attempt}-${entry.state}-${entry.occurredAt}-${index}`}><span className={`timeline-dot ${statusTone(entry.state)}`} /><div><strong>{entry.state.replaceAll("_", " ")}</strong><small>Attempt {entry.attempt}{entry.scriberrStatus ? ` · Scriberr: ${entry.scriberrStatus}` : ""}</small>{entry.error && <p>{entry.error}</p>}</div><time>{formatTime(entry.occurredAt)}</time></div>)}
+      </OperationsSection>
+
+      <div className="destination-grid">
+        <DestinationCard title="Notion" status={payload.destinations.notion?.status ?? "Not configured"} outcomes={payload.destinations.notion?.operations ?? []} extra={payload.destinations.notion ? `Attempt ${payload.destinations.notion.currentAttempt} · Audio: ${payload.destinations.notion.audioStatus} · Updated ${formatTime(payload.destinations.notion.updatedAt)}` : undefined} />
+        <DestinationCard title="MQTT" status={destinationStatus(payload.destinations.mqtt)} outcomes={payload.destinations.mqtt} />
+        <DestinationCard title="Notifications" status={destinationStatus(payload.destinations.notifications)} outcomes={payload.destinations.notifications} />
       </div>
     </section>
   );
 }
 
-function StatusCard({ label, value, detail, warning = false }: { label: string; value: string; detail: string; warning?: boolean }) {
-  return <article className="card"><span className="card-label">{label}</span><strong><span className={`status-dot${warning ? " warning" : ""}`} />{value}</strong><p>{detail}</p></article>;
+function DetailValue({ label, value }: { label: string; value: string }) {
+  return <article><span>{label}</span><strong>{value}</strong></article>;
+}
+
+function OperationsSection({ title, empty, children }: { title: string; empty: string; children: ReactNode }) {
+  const hasChildren = Array.isArray(children) ? children.length > 0 : Boolean(children);
+  return <section className="operations-section"><div className="section-heading"><h2>{title}</h2></div>{hasChildren ? <div className="timeline">{children}</div> : <p className="muted-copy">{empty}</p>}</section>;
+}
+
+function destinationStatus(outcomes: OperationOutcome[]): string {
+  if (outcomes.length === 0) return "No deliveries";
+  if (outcomes.some((outcome) => outcome.status === "failed")) return "Needs attention";
+  if (outcomes.some((outcome) => outcome.status === "pending")) return "Pending";
+  return "Succeeded";
+}
+
+function outcomeDetail(outcome: OperationOutcome): string {
+  const timestamp = outcome.completedAt ?? outcome.deliveredAt ?? outcome.updatedAt ?? outcome.createdAt;
+  return [
+    outcome.attempt ? `Job attempt ${outcome.attempt}` : undefined,
+    outcome.attempts === 0 ? "No failed attempts" : `${outcome.attempts} failed ${outcome.attempts === 1 ? "attempt" : "attempts"}`,
+    timestamp ? formatTime(timestamp) : undefined,
+    outcome.error ?? undefined
+  ].filter(Boolean).join(" · ");
+}
+
+function DestinationCard({ title, status, outcomes, extra }: { title: string; status: string; outcomes: OperationOutcome[]; extra?: string }) {
+  return <article className="destination-card"><header><div><span>{title}</span><strong>{status}</strong></div><span className={`status-dot ${statusTone(status)}`} /></header>{extra && <p>{extra}</p>}{outcomes.length === 0 ? <p>No recorded activity.</p> : <div className="outcome-list">{outcomes.slice(0, 8).map((outcome, index) => <div key={`${outcome.operation ?? outcome.event ?? outcome.destination}-${index}`}><span><strong>{outcome.operation ?? outcome.event ?? outcome.destination}</strong><small>{outcomeDetail(outcome)}</small></span><span className={`status-badge ${statusTone(outcome.status)}`}>{outcome.status}</span></div>)}</div>}</article>;
 }
 
 const groupLabels: Record<string, { title: string; description: string; optional?: boolean }> = {

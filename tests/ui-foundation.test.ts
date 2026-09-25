@@ -40,7 +40,7 @@ async function withServer(
   work: (origin: string) => Promise<void>
 ): Promise<void> {
   const auth = new ScriberrBrowserAuth(() => value.configuration.current.config, request);
-  const ui = new UiServer(() => value.configuration.current.config, value.configuration, auth, logger, uiRoot);
+  const ui = new UiServer(() => value.configuration.current.config, value.configuration, auth, logger, value.db, () => ({ scriberr: "ready", discoveryMode: "webhook" }), uiRoot);
   const receiver = new WebhookReceiver(value.config, value.db, () => undefined, logger, new Metrics(), () => "ready", ui);
   try {
     await receiver.listen(0, "127.0.0.1");
@@ -129,7 +129,7 @@ test("API-key setup requires browser auth and same-origin mutation protection", 
     return Response.json({ error: "unauthorized" }, { status: 401 });
   };
   const auth = new ScriberrBrowserAuth(() => configuration.current.config, request);
-  const ui = new UiServer(() => configuration.current.config, configuration, auth, logger, uiRoot);
+  const ui = new UiServer(() => configuration.current.config, configuration, auth, logger, db, () => ({ scriberr: "configuration_required", discoveryMode: "filesystem" }), uiRoot);
   const receiver = new WebhookReceiver(config, db, () => undefined, logger, new Metrics(), () => "configuration_required", ui);
   try {
     await receiver.listen(0, "127.0.0.1");
@@ -278,5 +278,99 @@ test("settings API reports incomplete optional integrations without exposing the
     const body = await response.json() as { issues: Array<{ group: string; key: string; message: string }> };
     assert.deepEqual(body.issues, [{ group: "mqtt", key: "mqttUrl", env: "SIDECARR_MQTT_URL", source: "unset", message: "is required when MQTT credentials are present" }]);
     assert.equal(value.configuration.current.config.mqttUrl, undefined);
+  });
+});
+
+test("operations APIs expose authenticated metadata without content payloads", async () => {
+  const value = scenario({ SIDECARR_MQTT_URL: "mqtt://broker.test:1883" });
+  const jobId = "123e4567-e89b-12d3-a456-426614174000";
+  const discovered = value.db.discover(jobId, "", "2026-09-24T12:00:00Z", "webhook", "Planning meeting").job;
+  value.db.updateJob(jobId, {
+    sidecar_state: "job_ready",
+    scriberr_status: "completed",
+    job_ready_outcome: "ready",
+    job_ready_at: "2026-09-24T12:05:00Z",
+    last_error: null
+  });
+  value.db.recordJobState(value.db.getJob(jobId)!, "2026-09-24T12:05:00Z");
+  value.db.ensureEvent(discovered, "job_found", { transcript: "must-not-leak", summary: "also-private" });
+  const request: typeof fetch = async (_input, init) => new Headers(init?.headers).has("authorization")
+    ? Response.json({ ok: true })
+    : Response.json({ error: "unauthorized" }, { status: 401 });
+
+  await withServer(value, request, async (origin) => {
+    const headers = { Authorization: "Bearer browser-token" };
+    assert.equal((await fetch(`${origin}/sidecarr/api/jobs`)).status, 401);
+
+    const list = await fetch(`${origin}/sidecarr/api/jobs?page=1&limit=10`, { headers });
+    assert.equal(list.status, 200);
+    const listBody = await list.json() as { jobs: Array<{ id: string; title: string; status: string }>; pagination: { total: number } };
+    assert.deepEqual(listBody.jobs, [{
+      id: jobId,
+      title: "Planning meeting",
+      source: "webhook",
+      state: "job_ready",
+      scriberrStatus: "completed",
+      status: "Ready",
+      active: false,
+      attempt: 1,
+      outcome: "ready",
+      firstSeenAt: "2026-09-24T12:00:00Z",
+      lastSeenAt: "2026-09-24T12:00:00Z",
+      lastCheckedAt: null,
+      updatedAt: value.db.getJob(jobId)!.updated_at,
+      readyAt: "2026-09-24T12:05:00Z",
+      error: null
+    }]);
+    assert.equal(listBody.pagination.total, 1);
+
+    const detail = await fetch(`${origin}/sidecarr/api/jobs/${jobId}`, { headers });
+    assert.equal(detail.status, 200);
+    const detailText = await detail.text();
+    assert.doesNotMatch(detailText, /must-not-leak|also-private|payload_json/);
+    const detailBody = JSON.parse(detailText) as { history: unknown[]; links: { scriberr: string; notion: string | null }; destinations: { mqtt: unknown[] } };
+    assert.equal(detailBody.history.length, 2);
+    assert.equal(detailBody.destinations.mqtt.length, 1);
+    assert.equal(detailBody.links.scriberr, `http://scriberr.test/audio/${jobId}`);
+    assert.equal(detailBody.links.notion, null);
+
+    const overview = await fetch(`${origin}/sidecarr/api/operations/overview`, { headers });
+    assert.equal(overview.status, 200);
+    const overviewBody = await overview.json() as { health: Array<{ key: string; status: string }>; recentFailures: unknown[] };
+    assert.equal(overviewBody.health.find((item) => item.key === "scriberr")?.status, "healthy");
+    assert.equal(overviewBody.health.find((item) => item.key === "mqtt")?.status, "healthy");
+    assert.deepEqual(overviewBody.recentFailures, []);
+
+    assert.equal((await fetch(`${origin}/sidecarr/api/jobs`, { method: "POST", headers })).status, 405);
+  });
+});
+
+test("jobs API presents concise statuses for empty, active, ready, warning, and failed states", async () => {
+  const value = scenario();
+  const request: typeof fetch = async (_input, init) => new Headers(init?.headers).has("authorization")
+    ? Response.json({ ok: true })
+    : Response.json({ error: "unauthorized" }, { status: 401 });
+  await withServer(value, request, async (origin) => {
+    const headers = { Authorization: "Bearer browser-token" };
+    const empty = await (await fetch(`${origin}/sidecarr/api/jobs`, { headers })).json() as { jobs: unknown[] };
+    assert.deepEqual(empty.jobs, []);
+
+    const cases: Array<{ id: string; state: "discovered" | "processing_transcription" | "summary_processing" | "job_ready" | "transcription_failed"; outcome?: "ready" | "ready_with_warnings"; expected: string; active: boolean }> = [
+      { id: "job-waiting", state: "discovered", expected: "Waiting", active: true },
+      { id: "job-transcribing", state: "processing_transcription", expected: "Transcribing", active: true },
+      { id: "job-summary", state: "summary_processing", expected: "Generating summary", active: true },
+      { id: "job-ready", state: "job_ready", outcome: "ready", expected: "Ready", active: false },
+      { id: "job-warning", state: "job_ready", outcome: "ready_with_warnings", expected: "Ready with warnings", active: false },
+      { id: "job-failed", state: "transcription_failed", expected: "Failed", active: false }
+    ];
+    for (const [index, item] of cases.entries()) {
+      value.db.discover(item.id, "", `2026-09-24T12:0${index}:00Z`, "webhook", item.id);
+      value.db.updateJob(item.id, { sidecar_state: item.state, job_ready_outcome: item.outcome ?? null });
+    }
+
+    const response = await fetch(`${origin}/sidecarr/api/jobs?limit=10`, { headers });
+    const body = await response.json() as { jobs: Array<{ id: string; status: string; active: boolean }> };
+    const actual = new Map(body.jobs.map((job) => [job.id, { status: job.status, active: job.active }]));
+    for (const item of cases) assert.deepEqual(actual.get(item.id), { status: item.expected, active: item.active });
   });
 });

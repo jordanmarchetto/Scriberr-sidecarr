@@ -82,6 +82,10 @@ export class BackgroundRuntime {
     return this.config.scriberrApiKey ? this.readiness.status : "configuration_required";
   }
 
+  get discoveryMode(): "webhook" | "filesystem" {
+    return this.service.effectiveDiscoveryMode;
+  }
+
   async runCycle(): Promise<boolean> {
     if (this.closed || !this.config.scriberrApiKey) return false;
     return this.readiness.run(async () => {

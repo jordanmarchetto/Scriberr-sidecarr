@@ -44,7 +44,7 @@ type PageShell = {
 
 export class NotionPublisher implements NotebookPublisher {
   readonly provider = "notion";
-  readonly reconciliationKey = "layout:v3";
+  readonly reconciliationKey: string;
 
   readiness(job: ScriberrJob, row: JobRow, summaryExpected: boolean): NotebookReadiness {
     const page = this.db.getNotebookPage(job.id, this.provider);
@@ -71,6 +71,7 @@ export class NotionPublisher implements NotebookPublisher {
   ) {
     if (!config.notionParentPageUrl) throw new Error("Notion parent page URL is required");
     this.parentPageId = parseNotionPageId(config.notionParentPageUrl);
+    this.reconciliationKey = `layout:v4:${hash(`${config.scriberrPublicUrl}${config.uiBasePath}`)}`;
   }
 
   async sync(job: ScriberrJob, row: JobRow): Promise<NotebookOutcome[]> {
@@ -272,6 +273,7 @@ export class NotionPublisher implements NotebookPublisher {
     const initial = await this.notion.appendChildren(pageId, [
       paragraph(this.statusText(job, row)),
       paragraph("Open in Scriberr", this.scriberrPageUrl(job.id)),
+      paragraph("Manage in Sidecarr", this.sidecarrPageUrl(job.id)),
       toggle("Details", [
         table(this.metadataRows(job, row)),
         table(this.classificationRows())
@@ -282,12 +284,12 @@ export class NotionPublisher implements NotebookPublisher {
       toggle("Summary", [paragraph("Waiting for transcription…")])
     ]);
     const status = required(initial[0], "status block");
-    const details = required(initial[2], "details container");
+    const details = required(initial[3], "details container");
     const detailChildren = await this.notion.children(details.id);
     const metadata = required(detailChildren[0], "metadata table");
     const classification = required(detailChildren[1], "classification table");
-    const audio = required(initial[3], "audio container");
-    const summary = required(initial[6], "summary container");
+    const audio = required(initial[4], "audio container");
+    const summary = required(initial[7], "summary container");
     const classificationRows = await this.notion.children(classification.id);
     if (classificationRows.length < 4) throw new Error("Notion did not create the classification rows");
     const summaryChildren = await this.notion.children(summary.id);
@@ -512,6 +514,7 @@ export class NotionPublisher implements NotebookPublisher {
   private async ensurePageLayout(job: ScriberrJob, row: JobRow, page: NotebookPageRow): Promise<void> {
     const blocks = await this.notion.children(page.page_id);
     let link = blocks.find((block) => blockText(block) === "Open in Scriberr");
+    let manageLink = blocks.find((block) => blockText(block) === "Manage in Sidecarr");
     let details = blocks.find((block) => blockText(block) === "Details");
 
     if (!link) {
@@ -524,6 +527,16 @@ export class NotionPublisher implements NotebookPublisher {
       await this.notion.updateBlock(link.id, paragraphBody("Open in Scriberr", this.scriberrPageUrl(job.id)));
     }
 
+    if (!manageLink) {
+      manageLink = required((await this.notion.appendChildren(
+        page.page_id,
+        [paragraph("Manage in Sidecarr", this.sidecarrPageUrl(job.id))],
+        link.id
+      ))[0], "Sidecarr link");
+    } else if (blockLink(manageLink) !== this.sidecarrPageUrl(job.id)) {
+      await this.notion.updateBlock(manageLink.id, paragraphBody("Manage in Sidecarr", this.sidecarrPageUrl(job.id)));
+    }
+
     if (!details) {
       await this.captureClassificationEdits(page, true);
       const refreshed = this.db.getNotebookPage(job.id, this.provider)!;
@@ -532,7 +545,7 @@ export class NotionPublisher implements NotebookPublisher {
           table(this.metadataRows(job, row)),
           table(this.classificationRows(refreshed))
         ])
-      ], link.id))[0], "details container");
+      ], manageLink.id))[0], "details container");
       const tables = (await this.notion.children(details.id)).filter((block) => block.type === "table");
       const metadata = required(tables[0], "metadata table");
       const classification = required(tables[1], "classification table");
@@ -780,6 +793,10 @@ export class NotionPublisher implements NotebookPublisher {
 
   private scriberrPageUrl(jobId: string): string {
     return `${this.config.scriberrPublicUrl}/audio/${encodeURIComponent(jobId)}`;
+  }
+
+  private sidecarrPageUrl(jobId: string): string {
+    return `${this.config.scriberrPublicUrl}${this.config.uiBasePath}/jobs/${encodeURIComponent(jobId)}`;
   }
 
   private metadataRows(job: ScriberrJob, row: JobRow): string[][] {

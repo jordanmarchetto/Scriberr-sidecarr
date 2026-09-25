@@ -43,6 +43,7 @@ export type SidecarState =
 
 export type JobRow = {
   job_id: string;
+  title: string | null;
   source: string;
   transcript_folder: string;
   first_seen_at: string;
@@ -63,6 +64,16 @@ export type JobRow = {
   last_error: string | null;
   created_at: string;
   updated_at: string;
+};
+
+export type JobStateHistoryRow = {
+  id: number;
+  job_id: string;
+  attempt: number;
+  sidecar_state: SidecarState;
+  scriberr_status: string | null;
+  error: string | null;
+  occurred_at: string;
 };
 
 export type ScriberrSummaryTemplate = {
