@@ -165,6 +165,8 @@ export class SidecarService {
       last_error: job.error_message ?? null
     });
     current = this.db.getJob(previous.job_id)!;
+    await this.captureRecordingMetadata(job, current);
+    current = this.db.getJob(previous.job_id)!;
 
     if (job.status === "uploaded" || job.status === "pending") {
       this.transition(current, "pending_transcription", "pending_transcription", job.status, job.title);
@@ -380,9 +382,29 @@ export class SidecarService {
     const hasNewSignal = signals.some((signal) => !job.last_checked_at || Date.parse(signal.received_at) > Date.parse(job.last_checked_at));
     if (hasNewSignal) return true;
     if (this.notebook?.needsReconciliation(job.job_id)) return true;
-    if (job.scriberr_status === "not_found" || terminalStates.has(job.sidecar_state)) return false;
+    if (job.scriberr_status === "not_found") return false;
+    if (terminalStates.has(job.sidecar_state)) return job.recording_metadata_checked_at === null;
     if (job.last_error && elapsed < failedPollBackoffMs) return false;
     return true;
+  }
+
+  private async captureRecordingMetadata(job: ScriberrJob, row: JobRow): Promise<void> {
+    const filename = row.recording_filename ?? recordingFilename(job);
+    const durationSeconds = row.recording_duration_seconds ?? transcriptDurationSeconds(job.transcript);
+    let sizeBytes = row.recording_size_bytes;
+    if (sizeBytes === null) {
+      try {
+        sizeBytes = (await this.api.getAudioMetadata(job.id)).sizeBytes;
+      } catch (error) {
+        this.logger.debug({ jobId: job.id, error: this.safeError(error) }, "recording metadata lookup failed");
+      }
+    }
+    this.db.updateJob(row.job_id, {
+      recording_filename: filename,
+      recording_size_bytes: sizeBytes,
+      recording_duration_seconds: durationSeconds,
+      recording_metadata_checked_at: new Date().toISOString()
+    });
   }
 
   private pollPriority(job: JobRow): number {
@@ -436,5 +458,23 @@ export class SidecarService {
       this.db.recordJobState(this.db.getJob(row.job_id)!, occurredAt);
       this.logger.info({ jobId: row.job_id, attempt: row.attempt, outcome }, "job is ready");
     }
+  }
+}
+
+function recordingFilename(job: ScriberrJob): string | null {
+  const title = job.title?.trim();
+  if (title) return title;
+  const source = job.merged_audio_path || job.audio_path;
+  return source ? path.basename(source) : null;
+}
+
+function transcriptDurationSeconds(transcript: string | null | undefined): number | null {
+  if (!transcript?.trim()) return null;
+  try {
+    const parsed = JSON.parse(transcript) as { segments?: Array<{ end?: unknown }> };
+    const ends = parsed.segments?.map((segment) => segment.end).filter((end): end is number => typeof end === "number" && Number.isFinite(end) && end >= 0) ?? [];
+    return ends.length > 0 ? Math.max(...ends) : null;
+  } catch {
+    return null;
   }
 }

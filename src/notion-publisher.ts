@@ -50,7 +50,8 @@ export class NotionPublisher implements NotebookPublisher {
     const page = this.db.getNotebookPage(job.id, this.provider);
     if (!page || page.current_attempt !== row.attempt) return { ready: false, warning: false };
     const title = this.title(job, row);
-    const statusHash = hash(`${title}\n${job.status}\n${row.sidecar_state}\n${row.attempt}\n${row.last_error ?? ""}`);
+    const metadataValues = this.metadataRows(job, row);
+    const statusHash = hash(`${title}\n${job.status}\n${row.sidecar_state}\n${row.attempt}\n${row.last_error ?? ""}\n${JSON.stringify(metadataValues)}`);
     const audioReady = page.audio_state === "attached" || page.audio_state === "skipped";
     const transcriptReady = Boolean(page.transcript_hash);
     const summaryReady = !summaryExpected || Boolean(page.summary_hash);
@@ -144,20 +145,17 @@ export class NotionPublisher implements NotebookPublisher {
     }
 
     const title = this.title(job, row);
-    const statusHash = hash(`${title}\n${job.status}\n${row.sidecar_state}\n${row.attempt}\n${row.last_error ?? ""}`);
+    const metadataValues = this.metadataRows(job, row);
+    const statusHash = hash(`${title}\n${job.status}\n${row.sidecar_state}\n${row.attempt}\n${row.last_error ?? ""}\n${JSON.stringify(metadataValues)}`);
     if (page.last_status !== statusHash || page.last_title !== title) {
       const outcome = await this.runOperation(row, `status:${statusHash}`, "update_status", async () => {
         await this.notion.updatePageTitle(page!.page_id, title);
         await this.notion.updateBlock(page!.status_block_id, paragraphBody(this.statusText(job, row)));
-        const metadataRows = await this.notion.children(page!.metadata_table_id);
-        const values = [
-          ["Recording date", job.created_at ?? row.first_seen_at],
-          ["Scriberr status", job.status],
-          ["Current attempt", String(row.attempt)],
-          ["Scriberr job ID", job.id]
-        ];
-        for (let index = 0; index < Math.min(metadataRows.length, values.length); index += 1) {
-          await this.notion.updateBlock(metadataRows[index].id, tableRowBody(values[index]));
+        const existingRows = await this.notion.children(page!.metadata_table_id);
+        for (const values of metadataValues) {
+          const existing = existingRows.find((metadataRow) => tableRowValue(metadataRow)[0] === values[0]);
+          if (existing) await this.notion.updateBlock(existing.id, tableRowBody(values));
+          else await this.notion.appendChildren(page!.metadata_table_id, [tableRow(values)]);
         }
         this.db.updateNotebookPage(job.id, this.provider, { last_status: statusHash, last_title: title });
         page = this.db.getNotebookPage(job.id, this.provider)!;
@@ -802,6 +800,9 @@ export class NotionPublisher implements NotebookPublisher {
   private metadataRows(job: ScriberrJob, row: JobRow): string[][] {
     return [
       ["Recording date", job.created_at ?? row.first_seen_at],
+      ["Filename", row.recording_filename ?? "—"],
+      ["Duration", formatDuration(row.recording_duration_seconds)],
+      ["File size", formatFileSize(row.recording_size_bytes)],
       ["Scriberr status", job.status],
       ["Current attempt", String(row.attempt)],
       ["Scriberr job ID", job.id]
@@ -850,12 +851,16 @@ function table(rows: string[][]): Block {
       table_width: 2,
       has_column_header: false,
       has_row_header: true,
-      children: rows.map((row) => ({
-        object: "block",
-        type: "table_row",
-        table_row: { cells: row.map((cell) => [richText(cell)]) }
-      }))
+      children: rows.map(tableRow)
     }
+  };
+}
+
+function tableRow(row: string[]): Block {
+  return {
+    object: "block",
+    type: "table_row",
+    table_row: { cells: row.map((cell) => [richText(cell)]) }
   };
 }
 
@@ -1149,6 +1154,24 @@ function safelyDecodeFilename(value: string): string {
 
 function formatMiB(bytes: number): string {
   return `${(bytes / 1024 / 1024).toFixed(1)} MiB`;
+}
+
+function formatFileSize(bytes: number | null): string {
+  if (bytes === null) return "—";
+  if (bytes < 1024) return `${bytes} B`;
+  if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(1)} KiB`;
+  return formatMiB(bytes);
+}
+
+function formatDuration(seconds: number | null): string {
+  if (seconds === null) return "—";
+  const totalSeconds = Math.max(0, Math.round(seconds));
+  const hours = Math.floor(totalSeconds / 3600);
+  const minutes = Math.floor((totalSeconds % 3600) / 60);
+  const remainingSeconds = totalSeconds % 60;
+  return hours > 0
+    ? `${hours}h ${minutes}m ${remainingSeconds}s`
+    : `${minutes}m ${remainingSeconds}s`;
 }
 
 function isPermanentAudioRejection(error: unknown): boolean {

@@ -16,7 +16,7 @@ const job: ScriberrJob = {
   id: jobId,
   status: "completed",
   title: "Meeting.mp3",
-  transcript: JSON.stringify({ text: "Meeting transcript", segments: [] }),
+  transcript: JSON.stringify({ text: "Meeting transcript", segments: [{ start: 0, end: 64.25, text: "Meeting transcript" }] }),
   summary: null
 };
 
@@ -38,6 +38,10 @@ class FakeScriberrApi extends ScriberrApi {
 
   override async getSummary(): Promise<{ content: string | null }> {
     return { content: this.summaryContent };
+  }
+
+  override async getAudioMetadata(): Promise<{ sizeBytes: number }> {
+    return { sizeBytes: 1_234_567 };
   }
 
   override async getSummarySettings(): Promise<ScriberrSummarySettings> {
@@ -92,6 +96,11 @@ test("waits for Scriberr when server-side auto-summary is enabled", async () => 
 
     assert.equal(value.api.summaryRequests, 0);
     assert.equal(value.db.getJob(jobId)?.sidecar_state, "summary_pending");
+    assert.deepEqual({
+      filename: value.db.getJob(jobId)?.recording_filename,
+      sizeBytes: value.db.getJob(jobId)?.recording_size_bytes,
+      durationSeconds: value.db.getJob(jobId)?.recording_duration_seconds
+    }, { filename: "Meeting.mp3", sizeBytes: 1_234_567, durationSeconds: 64.25 });
   } finally {
     cleanup(value);
   }

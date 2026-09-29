@@ -4,6 +4,7 @@ import { sanitizeError } from "./errors.js";
 import { Metrics } from "./metrics.js";
 import type {
   ScriberrJob,
+  ScriberrAudioMetadata,
   ScriberrJobListResponse,
   ScriberrSummary,
   ScriberrSummarySettings,
@@ -63,6 +64,22 @@ export class ScriberrApi {
       await this.throwResponse(response);
     }
     return response;
+  }
+
+  async getAudioMetadata(jobId: string): Promise<ScriberrAudioMetadata> {
+    const response = await this.fetch(`/api/v1/transcription/${encodeURIComponent(jobId)}/audio`, {
+      headers: { Range: "bytes=0-0" }
+    }, this.config.apiTimeoutMs);
+    if (!response.ok) {
+      this.metrics.incrementApiFailure();
+      await this.throwResponse(response);
+    }
+    const contentRange = response.headers.get("content-range");
+    const rangeSize = contentRange?.match(/\/(\d+)$/)?.[1];
+    const contentLength = response.status === 200 ? response.headers.get("content-length") : null;
+    const parsed = Number(rangeSize ?? contentLength);
+    await response.body?.cancel();
+    return { sizeBytes: Number.isSafeInteger(parsed) && parsed >= 0 ? parsed : null };
   }
 
   async isAvailable(): Promise<boolean> {

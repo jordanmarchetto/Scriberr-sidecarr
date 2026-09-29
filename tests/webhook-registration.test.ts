@@ -166,7 +166,7 @@ test("webhook mode does not poll terminal jobs without a new signal", async () =
   const value = scenario();
   try {
     const row = value.db.discover(jobId, "", new Date().toISOString(), "webhook").job;
-    value.db.updateJob(row.job_id, { sidecar_state: "summary_complete", scriberr_status: "completed" });
+    value.db.updateJob(row.job_id, { sidecar_state: "summary_complete", scriberr_status: "completed", recording_metadata_checked_at: new Date().toISOString() });
     let jobLookups = 0;
     const api = new class extends ScriberrApi {
       override async getJob(): Promise<ScriberrJob> {
@@ -193,7 +193,8 @@ test("filesystem mode does not routinely poll terminal jobs", async () => {
     value.db.updateJob(row.job_id, {
       sidecar_state: "job_ready",
       scriberr_status: "completed",
-      last_checked_at: new Date(0).toISOString()
+      last_checked_at: new Date(0).toISOString(),
+      recording_metadata_checked_at: new Date(0).toISOString()
     });
     let jobLookups = 0;
     const api = new class extends ScriberrApi {
@@ -208,6 +209,51 @@ test("filesystem mode does not routinely poll terminal jobs", async () => {
     await service.runCycle();
 
     assert.equal(jobLookups, 0);
+  } finally {
+    cleanup(value);
+  }
+});
+
+test("terminal jobs missing recording metadata are backfilled once", async () => {
+  const value = scenario();
+  try {
+    const row = value.db.discover(jobId, "", new Date(0).toISOString(), "filesystem").job;
+    value.db.updateJob(row.job_id, {
+      sidecar_state: "job_ready",
+      scriberr_status: "completed",
+      summary_expected: 1,
+      job_ready_outcome: "ready"
+    });
+    let jobLookups = 0;
+    let metadataLookups = 0;
+    const api = new class extends ScriberrApi {
+      override async getJob(): Promise<ScriberrJob> {
+        jobLookups += 1;
+        return {
+          id: jobId,
+          title: "Appointment.mp3",
+          status: "completed",
+          transcript: JSON.stringify({ segments: [{ start: 0, end: 125.5, text: "done" }] }),
+          summary: "done"
+        };
+      }
+
+      override async getAudioMetadata(): Promise<{ sizeBytes: number }> {
+        metadataLookups += 1;
+        return { sizeBytes: 5_000_000 };
+      }
+    }(value.config);
+    const mqtt = { flush: async () => undefined } as unknown as MqttPublisher;
+    const service = new SidecarService(value.config, value.db, api, mqtt, logger);
+
+    await service.runCycle();
+    await service.runCycle();
+
+    assert.equal(jobLookups, 1);
+    assert.equal(metadataLookups, 1);
+    assert.equal(value.db.getJob(jobId)?.recording_filename, "Appointment.mp3");
+    assert.equal(value.db.getJob(jobId)?.recording_size_bytes, 5_000_000);
+    assert.equal(value.db.getJob(jobId)?.recording_duration_seconds, 125.5);
   } finally {
     cleanup(value);
   }
