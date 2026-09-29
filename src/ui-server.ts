@@ -294,7 +294,7 @@ export class UiServer {
     const limit = Math.min(this.positiveInteger(url.searchParams.get("limit"), 10), 50);
     const result = this.db.listRecentJobs(page, limit);
     this.respondJson(response, 200, {
-      jobs: result.jobs.map((job) => this.safeJob(job)),
+      jobs: result.jobs.map((job) => this.safeJob(job, this.db.likelyDuplicateJobs(job.job_id).length)),
       pagination: {
         page,
         limit,
@@ -325,8 +325,15 @@ export class UiServer {
     const notionStatus = notionOperations.some((operation) => operation.status === "failed")
       ? "needs attention"
       : notion?.last_status ? "synchronized" : "pending";
+    const likelyDuplicates = this.db.likelyDuplicateJobs(jobId);
     this.respondJson(response, 200, {
-      job: this.safeJob(job),
+      job: this.safeJob(job, likelyDuplicates.length),
+      likelyDuplicates: likelyDuplicates.map((candidate) => ({
+        id: candidate.job_id,
+        title: candidate.title ?? `Scriberr job ${candidate.job_id}`,
+        status: this.displayStatus(candidate),
+        firstSeenAt: candidate.first_seen_at
+      })),
       links: {
         scriberr: `${this.config().scriberrPublicUrl}/audio/${encodeURIComponent(jobId)}`,
         notion: notion?.page_url ?? null
@@ -374,7 +381,7 @@ export class UiServer {
     });
   }
 
-  private safeJob(job: JobRow): object {
+  private safeJob(job: JobRow, likelyDuplicateCount = 0): object {
     return {
       id: job.job_id,
       title: job.title ?? `Scriberr job ${job.job_id}`,
@@ -390,6 +397,7 @@ export class UiServer {
       lastCheckedAt: job.last_checked_at,
       updatedAt: job.updated_at,
       readyAt: job.job_ready_at,
+      likelyDuplicateCount,
       error: job.last_error ? sanitizeError(job.last_error) : null
     };
   }

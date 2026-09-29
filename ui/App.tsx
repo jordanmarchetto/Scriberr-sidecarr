@@ -58,6 +58,7 @@ type JobSummary = {
   lastCheckedAt: string | null;
   updatedAt: string;
   readyAt: string | null;
+  likelyDuplicateCount: number;
   error: string | null;
 };
 type JobsPayload = {
@@ -79,6 +80,7 @@ type OperationOutcome = {
 };
 type JobDetailsPayload = {
   job: JobSummary;
+  likelyDuplicates: Array<{ id: string; title: string; status: string; firstSeenAt: string }>;
   links: { scriberr: string; notion: string | null };
   history: Array<{ attempt: number; state: string; scriberrStatus: string | null; error: string | null; occurredAt: string }>;
   destinations: {
@@ -338,7 +340,7 @@ function StatusCard({ label, value, detail, tone }: { label: string; value: stri
 }
 
 function Jobs({ token, jobId, openJob, back }: { token: string; jobId?: string; openJob: (jobId: string) => void; back: () => void }) {
-  if (jobId) return <JobDetails token={token} jobId={jobId} back={back} />;
+  if (jobId) return <JobDetails token={token} jobId={jobId} back={back} openJob={openJob} />;
   return <JobsList token={token} openJob={openJob} />;
 }
 
@@ -370,7 +372,7 @@ function JobsList({ token, openJob }: { token: string; openJob: (jobId: string) 
             <div className="jobs-list">
               <div className="jobs-header"><span>Recording</span><span>Status</span><span>Discovered</span><span>Activity</span><span /></div>
               {payload.jobs.map((job) => <button key={job.id} className="job-row" onClick={() => openJob(job.id)}>
-                <span className="job-title"><strong>{job.title}</strong><small>{job.id}</small></span>
+                <span className="job-title"><strong>{job.title}</strong><small>{job.id}</small>{job.likelyDuplicateCount > 0 && <em>Likely duplicate · {job.likelyDuplicateCount} related</em>}</span>
                 <span><span className={`status-badge ${statusTone(job.status)}`}>{job.status}</span></span>
                 <time>{formatTime(job.firstSeenAt)}</time>
                 <time>{formatTime(job.updatedAt)}</time>
@@ -383,7 +385,7 @@ function JobsList({ token, openJob }: { token: string; openJob: (jobId: string) 
   );
 }
 
-function JobDetails({ token, jobId, back }: { token: string; jobId: string; back: () => void }) {
+function JobDetails({ token, jobId, back, openJob }: { token: string; jobId: string; back: () => void; openJob: (jobId: string) => void }) {
   const [payload, setPayload] = useState<JobDetailsPayload | null>(null);
   const [error, setError] = useState("");
   const [refreshing, setRefreshing] = useState(false);
@@ -423,6 +425,10 @@ function JobDetails({ token, jobId, back }: { token: string; jobId: string; back
       <div className="page-heading job-heading"><div><div className="eyebrow">Job details</div><h1>{job.title}</h1><p className="job-id">{job.id}</p></div><div className="heading-actions"><span className={`status-badge large ${statusTone(job.status)}`}>{job.status}</span><button className="secondary-button" disabled={refreshing} onClick={() => void load()}>{refreshing ? "Refreshing…" : "Refresh"}</button></div></div>
       {error && <div className="error-banner" role="alert">{error}</div>}
       {job.error && <div className="error-banner"><strong>Latest error</strong><span>{job.error}</span></div>}
+      {payload.likelyDuplicates.length > 0 && <aside className="duplicate-banner">
+        <div><strong>Likely duplicate recordings</strong><p>{payload.likelyDuplicates.length} other {payload.likelyDuplicates.length === 1 ? "job has" : "jobs have"} the same filename and arrived within one hour. Review them before removing anything in Scriberr.</p></div>
+        <div className="duplicate-links">{payload.likelyDuplicates.map((candidate) => <button key={candidate.id} onClick={() => openJob(candidate.id)}><span>{formatTime(candidate.firstSeenAt)}</span><strong>{candidate.status}</strong><b aria-hidden="true">›</b></button>)}</div>
+      </aside>}
       <div className="detail-links"><a className="primary-button link-button" href={payload.links.scriberr}>Open in Scriberr ↗</a>{payload.links.notion && <a className="secondary-button link-button" href={payload.links.notion}>Open in Notion ↗</a>}</div>
       <div className="detail-grid">
         <DetailValue label="Attempt" value={String(job.attempt)} />

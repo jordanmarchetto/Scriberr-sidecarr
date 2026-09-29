@@ -403,6 +403,23 @@ export class StateStore {
     return { jobs, total };
   }
 
+  likelyDuplicateJobs(jobId: string, windowMs = 60 * 60 * 1000): JobRow[] {
+    const job = this.getJob(jobId);
+    const title = job?.title?.trim();
+    const firstSeenAt = job ? Date.parse(job.first_seen_at) : Number.NaN;
+    if (!title || !Number.isFinite(firstSeenAt) || windowMs < 0) return [];
+    const earliest = new Date(firstSeenAt - windowMs).toISOString();
+    const latest = new Date(firstSeenAt + windowMs).toISOString();
+    return this.db.prepare(`
+      SELECT * FROM jobs
+      WHERE job_id <> ?
+        AND title IS NOT NULL
+        AND LOWER(TRIM(title)) = LOWER(?)
+        AND julianday(first_seen_at) BETWEEN julianday(?) AND julianday(?)
+      ORDER BY first_seen_at DESC, job_id DESC
+    `).all(jobId, title, earliest, latest) as JobRow[];
+  }
+
   jobStateHistory(jobId: string): JobStateHistoryRow[] {
     return this.db.prepare(`
       SELECT id, job_id, attempt, sidecar_state, scriberr_status, error, occurred_at
