@@ -63,6 +63,27 @@ test("unprocessed webhook signals survive a database restart", () => {
   }
 });
 
+test("existing not-found jobs migrate to the missing terminal state", () => {
+  const directory = mkdtempSync(path.join(tmpdir(), "scriberr-sidecarr-missing-migration-"));
+  const dbPath = path.join(directory, "state.db");
+  let db: StateStore | undefined;
+  try {
+    db = new StateStore(dbPath);
+    db.discover("missing-job", "", "2026-09-15T12:00:00Z", "filesystem", "Missing recording.mp3");
+    db.updateJob("missing-job", { scriberr_status: "not_found", last_error: "Scriberr API 404" });
+    db.close();
+
+    db = new StateStore(dbPath);
+    assert.equal(db.getJob("missing-job")?.sidecar_state, "job_missing");
+    assert.deepEqual(db.jobStateHistory("missing-job").map((entry) => entry.sidecar_state), ["job_missing", "discovered"]);
+  } finally {
+    if (db) {
+      try { db.close(); } catch {}
+    }
+    rmSync(directory, { recursive: true, force: true });
+  }
+});
+
 test("operations queries paginate recent jobs and retain state history", () => {
   const directory = mkdtempSync(path.join(tmpdir(), "scriberr-sidecarr-operations-"));
   const db = new StateStore(path.join(directory, "state.db"));

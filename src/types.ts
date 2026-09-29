@@ -38,6 +38,7 @@ export type SidecarState =
   | "summary_processing"
   | "summary_complete"
   | "job_ready"
+  | "job_missing"
   | "transcription_failed"
   | "summary_failed";
 

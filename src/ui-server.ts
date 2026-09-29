@@ -404,6 +404,7 @@ export class UiServer {
 
   private displayStatus(job: JobRow): string {
     if (job.sidecar_state === "job_ready") return job.job_ready_outcome === "ready_with_warnings" ? "Ready with warnings" : "Ready";
+    if (job.sidecar_state === "job_missing") return "Missing";
     if (job.sidecar_state === "transcription_failed" || job.sidecar_state === "summary_failed") return "Failed";
     if (job.sidecar_state === "processing_transcription") return "Transcribing";
     if (["transcription_complete", "summary_pending", "summary_processing", "summary_complete"].includes(job.sidecar_state)) return "Generating summary";
