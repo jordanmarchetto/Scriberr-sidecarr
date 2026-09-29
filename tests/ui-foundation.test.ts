@@ -356,12 +356,13 @@ test("jobs API presents concise statuses for empty, active, ready, warning, and 
     const empty = await (await fetch(`${origin}/sidecarr/api/jobs`, { headers })).json() as { jobs: unknown[] };
     assert.deepEqual(empty.jobs, []);
 
-    const cases: Array<{ id: string; state: "discovered" | "processing_transcription" | "summary_processing" | "job_ready" | "transcription_failed"; outcome?: "ready" | "ready_with_warnings"; expected: string; active: boolean }> = [
+    const cases: Array<{ id: string; state: "discovered" | "processing_transcription" | "summary_processing" | "job_ready" | "job_missing" | "transcription_failed"; outcome?: "ready" | "ready_with_warnings"; expected: string; active: boolean }> = [
       { id: "job-waiting", state: "discovered", expected: "Waiting", active: true },
       { id: "job-transcribing", state: "processing_transcription", expected: "Transcribing", active: true },
       { id: "job-summary", state: "summary_processing", expected: "Generating summary", active: true },
       { id: "job-ready", state: "job_ready", outcome: "ready", expected: "Ready", active: false },
       { id: "job-warning", state: "job_ready", outcome: "ready_with_warnings", expected: "Ready with warnings", active: false },
+      { id: "job-missing", state: "job_missing", expected: "Missing", active: false },
       { id: "job-failed", state: "transcription_failed", expected: "Failed", active: false }
     ];
     for (const [index, item] of cases.entries()) {

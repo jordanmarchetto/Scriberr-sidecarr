@@ -116,7 +116,7 @@ function formatTime(value: string | null | undefined): string {
 function statusTone(status: string): "success" | "warning" | "danger" | "muted" {
   const normalized = status.toLowerCase();
   if (normalized.includes("fail") || normalized.includes("attention")) return "danger";
-  if (normalized.includes("warning") || normalized.includes("paused")) return "warning";
+  if (normalized.includes("warning") || normalized.includes("paused") || normalized.includes("missing")) return "warning";
   if (["ready", "healthy", "succeeded", "synchronized", "delivered"].some((value) => normalized.includes(value))) return "success";
   return "muted";
 }
@@ -233,7 +233,7 @@ export function App() {
           <NavButton active={route.page === "settings"} label="Settings" icon="⚙" onClick={() => navigate("settings")} />
         </nav>
         <div className="sidebar-footer">
-          <a className="nav-button" href={session?.scriberrUrl ?? "/"} title={scriberrLinkHint}><span>↗</span>Open Scriberr</a>
+          <ScriberrLink href={session?.scriberrUrl ?? "/"} />
           <button className="nav-button" onClick={() => setTheme(theme === "dark" ? "light" : "dark")}><span>{theme === "dark" ? "☀" : "☾"}</span>{theme === "dark" ? "Light mode" : "Dark mode"}</button>
           <button className="nav-button" onClick={() => void logout()}><span>⇥</span>Sign out</button>
         </div>
@@ -250,7 +250,7 @@ export function App() {
         <NavButton active={route.page === "overview"} label="Overview" icon="◫" onClick={() => navigate("overview")} />
         <NavButton active={route.page === "jobs"} label="Jobs" icon="≡" onClick={() => navigate("jobs")} />
         <NavButton active={route.page === "settings"} label="Settings" icon="⚙" onClick={() => navigate("settings")} />
-        <a className="nav-button" href={session?.scriberrUrl ?? "/"} title={scriberrLinkHint}><span>↗</span>Scriberr</a>
+        <ScriberrLink href={session?.scriberrUrl ?? "/"} compact />
       </nav>
     </div>
   );
@@ -262,6 +262,10 @@ function Brand() {
 
 function NavButton({ active, label, icon, onClick }: { active: boolean; label: string; icon: string; onClick: () => void }) {
   return <button className={`nav-button${active ? " active" : ""}`} aria-current={active ? "page" : undefined} onClick={onClick}><span>{icon}</span>{label}</button>;
+}
+
+function ScriberrLink({ href, compact = false }: { href: string; compact?: boolean }) {
+  return <a className="nav-button scriberr-link" href={href} title={scriberrLinkHint}><span>↗</span><span className="scriberr-link-label">{compact ? "Scriberr" : "Open Scriberr"}<small>May require login</small></span></a>;
 }
 
 function Overview({ session, token, reload, openJob }: { session: Session; token: string; reload: () => void; openJob: (jobId: string) => void }) {

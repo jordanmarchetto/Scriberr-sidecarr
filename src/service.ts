@@ -13,11 +13,9 @@ import { ScriberrApi, ScriberrApiError } from "./scriberr-api.js";
 import type { JobRow, ScriberrJob, ScriberrSummarySettings, SidecarState, WebhookSignalRow } from "./types.js";
 
 const jobIdPattern = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
-const terminalPollIntervalMs = 15 * 60 * 1000;
 const failedPollBackoffMs = 5 * 60 * 1000;
-const missingJobPollIntervalMs = 6 * 60 * 60 * 1000;
 const backgroundPollLimit = 5;
-const terminalStates = new Set<SidecarState>(["summary_complete", "summary_failed", "job_ready", "transcription_failed"]);
+const terminalStates = new Set<SidecarState>(["summary_complete", "summary_failed", "job_ready", "job_missing", "transcription_failed"]);
 
 export class SidecarService {
   private cycleRunning = false;
@@ -140,13 +138,15 @@ export class SidecarService {
       job = await this.api.getJob(previous.job_id);
     } catch (error) {
       const missing = error instanceof ScriberrApiError && error.status === 404;
+      const wasMissing = previous.sidecar_state === "job_missing";
       this.db.updateJob(previous.job_id, {
         last_checked_at: checkedAt,
         last_error: this.safeError(error),
-        ...(missing ? { scriberr_status: "not_found" } : {})
+        ...(missing ? { scriberr_status: "not_found", sidecar_state: "job_missing" } : {})
       });
       if (missing) {
-        this.logger.info({ jobId: previous.job_id }, "Scriberr job no longer exists; suppressing routine polling");
+        if (!wasMissing) this.db.recordJobState(this.db.getJob(previous.job_id)!, checkedAt);
+        this.logger.info({ jobId: previous.job_id }, "Scriberr job no longer exists; marked terminal until a new signal arrives");
         return true;
       }
       this.logger.warn({ jobId: previous.job_id, error: this.safeError(error) }, "Scriberr job lookup failed");
@@ -380,12 +380,8 @@ export class SidecarService {
     const hasNewSignal = signals.some((signal) => !job.last_checked_at || Date.parse(signal.received_at) > Date.parse(job.last_checked_at));
     if (hasNewSignal) return true;
     if (this.notebook?.needsReconciliation(job.job_id)) return true;
-    if (job.scriberr_status === "not_found") {
-      return this.filesystemDiscoveryEnabled && elapsed >= missingJobPollIntervalMs;
-    }
-    if (!this.filesystemDiscoveryEnabled && terminalStates.has(job.sidecar_state)) return false;
+    if (job.scriberr_status === "not_found" || terminalStates.has(job.sidecar_state)) return false;
     if (job.last_error && elapsed < failedPollBackoffMs) return false;
-    if (terminalStates.has(job.sidecar_state) && elapsed < terminalPollIntervalMs) return false;
     return true;
   }
 

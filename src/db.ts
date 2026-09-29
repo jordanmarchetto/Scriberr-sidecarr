@@ -292,6 +292,20 @@ export class StateStore {
       })();
     }
 
+    const missingMigrationAt = new Date().toISOString();
+    this.db.transaction(() => {
+      this.db.prepare(`
+        INSERT INTO job_state_history (job_id, attempt, sidecar_state, scriberr_status, error, occurred_at)
+        SELECT job_id, attempt, 'job_missing', scriberr_status, last_error, ?
+        FROM jobs
+        WHERE scriberr_status = 'not_found' AND sidecar_state <> 'job_missing'
+      `).run(missingMigrationAt);
+      this.db.prepare(`
+        UPDATE jobs SET sidecar_state = 'job_missing'
+        WHERE scriberr_status = 'not_found' AND sidecar_state <> 'job_missing'
+      `).run();
+    })();
+
   }
 
   close(): void {

@@ -186,7 +186,34 @@ test("webhook mode does not poll terminal jobs without a new signal", async () =
   }
 });
 
-test("a missing Scriberr job is recorded once and not polled forever", async () => {
+test("filesystem mode does not routinely poll terminal jobs", async () => {
+  const value = scenario();
+  try {
+    const row = value.db.discover(jobId, "", new Date(0).toISOString(), "filesystem").job;
+    value.db.updateJob(row.job_id, {
+      sidecar_state: "job_ready",
+      scriberr_status: "completed",
+      last_checked_at: new Date(0).toISOString()
+    });
+    let jobLookups = 0;
+    const api = new class extends ScriberrApi {
+      override async getJob(): Promise<ScriberrJob> {
+        jobLookups += 1;
+        return { id: jobId, status: "completed", summary: "done" };
+      }
+    }(value.config);
+    const mqtt = { flush: async () => undefined } as unknown as MqttPublisher;
+    const service = new SidecarService(value.config, value.db, api, mqtt, logger);
+
+    await service.runCycle();
+
+    assert.equal(jobLookups, 0);
+  } finally {
+    cleanup(value);
+  }
+});
+
+test("a missing Scriberr job becomes terminal and is not polled again", async () => {
   const value = scenario();
   try {
     value.db.discover(jobId, "", new Date().toISOString(), "webhook");
@@ -199,13 +226,13 @@ test("a missing Scriberr job is recorded once and not polled forever", async () 
     }(value.config);
     const mqtt = { flush: async () => undefined } as unknown as MqttPublisher;
     const service = new SidecarService(value.config, value.db, api, mqtt, logger);
-    service.setFilesystemDiscoveryEnabled(false);
-
     await service.runCycle();
     await service.runCycle();
 
     assert.equal(jobLookups, 1);
     assert.equal(value.db.getJob(jobId)?.scriberr_status, "not_found");
+    assert.equal(value.db.getJob(jobId)?.sidecar_state, "job_missing");
+    assert.deepEqual(value.db.jobStateHistory(jobId).map((entry) => entry.sidecar_state), ["job_missing", "discovered"]);
   } finally {
     cleanup(value);
   }

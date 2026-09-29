@@ -46,6 +46,8 @@ button { cursor: pointer; }
 .sidebar nav { display: grid; gap: 7px; margin-top: 44px; }
 .nav-button { width: 100%; min-height: 44px; padding: 0 13px; border: 0; border-radius: 11px; background: transparent; color: #aeb2c0; display: flex; align-items: center; gap: 12px; text-decoration: none; text-align: left; }
 .nav-button span { width: 20px; text-align: center; font-size: 18px; }
+.nav-button .scriberr-link-label { width: auto; display: grid; gap: 1px; text-align: left; font-size: inherit; }
+.scriberr-link-label small { color: #858b9e; font-size: 9px; }
 .nav-button:hover { background: rgba(255,255,255,.06); color: white; }
 .nav-button.active { background: rgba(255, 131, 95, .14); color: #ff9d80; }
 .sidebar-footer { margin-top: auto; display: grid; gap: 5px; }
@@ -220,6 +222,8 @@ h1 { margin: 0; font-size: clamp(32px, 4vw, 46px); letter-spacing: -.04em; }
   .bottom-nav { position: fixed; z-index: 5; left: 12px; right: 12px; bottom: 12px; padding: 7px; border: 1px solid var(--border); border-radius: 16px; background: color-mix(in srgb, var(--panel) 92%, transparent); box-shadow: var(--shadow); backdrop-filter: blur(18px); display: grid; grid-template-columns: repeat(4, 1fr); }
   .bottom-nav .nav-button { min-height: 51px; padding: 5px; color: var(--muted); display: grid; place-items: center; gap: 0; font-size: 11px; text-align: center; }
   .bottom-nav .nav-button span { font-size: 18px; }
+  .bottom-nav .nav-button .scriberr-link-label { display: grid; place-items: center; font-size: 11px; }
+  .bottom-nav .scriberr-link-label small { font-size: 8px; }
   .bottom-nav .nav-button.active { color: var(--accent); background: var(--accent-soft); }
   .bottom-nav a.nav-button { text-align: center; }
 }
