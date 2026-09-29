@@ -7,6 +7,7 @@ import pino from "pino";
 import { loadConfig, type Config } from "../src/config.ts";
 import { StateStore } from "../src/db.ts";
 import type { MqttPublisher } from "../src/mqtt-publisher.ts";
+import type { NotebookService } from "../src/notebook-service.ts";
 import { ScriberrApi, ScriberrApiError } from "../src/scriberr-api.ts";
 import { SidecarService } from "../src/service.ts";
 import type { ScriberrJob, ScriberrWebhook, ScriberrWebhookInput } from "../src/types.ts";
@@ -244,7 +245,12 @@ test("terminal jobs missing recording metadata are backfilled once", async () =>
       }
     }(value.config);
     const mqtt = { flush: async () => undefined } as unknown as MqttPublisher;
-    const service = new SidecarService(value.config, value.db, api, mqtt, logger);
+    const notebook = {
+      sync: async () => undefined,
+      needsReconciliation: () => false,
+      readiness: () => ({ ready: false, warning: true, pageUrl: null })
+    } as unknown as NotebookService;
+    const service = new SidecarService(value.config, value.db, api, mqtt, logger, undefined, notebook);
 
     await service.runCycle();
     await service.runCycle();
@@ -254,6 +260,7 @@ test("terminal jobs missing recording metadata are backfilled once", async () =>
     assert.equal(value.db.getJob(jobId)?.recording_filename, "Appointment.mp3");
     assert.equal(value.db.getJob(jobId)?.recording_size_bytes, 5_000_000);
     assert.equal(value.db.getJob(jobId)?.recording_duration_seconds, 125.5);
+    assert.equal(value.db.getJob(jobId)?.sidecar_state, "job_ready");
   } finally {
     cleanup(value);
   }
