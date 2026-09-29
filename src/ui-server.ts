@@ -397,6 +397,11 @@ export class UiServer {
       lastCheckedAt: job.last_checked_at,
       updatedAt: job.updated_at,
       readyAt: job.job_ready_at,
+      recording: {
+        filename: job.recording_filename,
+        sizeBytes: job.recording_size_bytes,
+        durationSeconds: job.recording_duration_seconds
+      },
       likelyDuplicateCount,
       error: job.last_error ? sanitizeError(job.last_error) : null
     };

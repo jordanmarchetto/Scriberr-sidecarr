@@ -320,6 +320,7 @@ test("operations APIs expose authenticated metadata without content payloads", a
       lastCheckedAt: null,
       updatedAt: value.db.getJob(jobId)!.updated_at,
       readyAt: "2026-09-24T12:05:00Z",
+      recording: { filename: "Planning meeting", sizeBytes: null, durationSeconds: null },
       likelyDuplicateCount: 0,
       error: null
     }]);

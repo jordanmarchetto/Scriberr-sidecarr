@@ -41,6 +41,10 @@ class TranscriptOnlyApi extends ScriberrApi {
   override async getSummarySettings(): Promise<ScriberrSummarySettings> {
     return { auto_summarize: false };
   }
+
+  override async getAudioMetadata(): Promise<{ sizeBytes: null }> {
+    return { sizeBytes: null };
+  }
 }
 
 function payload(): JobReadyPayload {

@@ -58,6 +58,7 @@ type JobSummary = {
   lastCheckedAt: string | null;
   updatedAt: string;
   readyAt: string | null;
+  recording: { filename: string | null; sizeBytes: number | null; durationSeconds: number | null };
   likelyDuplicateCount: number;
   error: string | null;
 };
@@ -111,6 +112,22 @@ function formatTime(value: string | null | undefined): string {
   if (!value) return "—";
   const date = new Date(value);
   return Number.isNaN(date.getTime()) ? value : date.toLocaleString();
+}
+
+function formatFileSize(bytes: number | null): string {
+  if (bytes === null) return "—";
+  if (bytes < 1024) return `${bytes} B`;
+  if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(1)} KiB`;
+  return `${(bytes / 1024 / 1024).toFixed(1)} MiB`;
+}
+
+function formatDuration(seconds: number | null): string {
+  if (seconds === null) return "—";
+  const totalSeconds = Math.max(0, Math.round(seconds));
+  const hours = Math.floor(totalSeconds / 3600);
+  const minutes = Math.floor((totalSeconds % 3600) / 60);
+  const remainingSeconds = totalSeconds % 60;
+  return hours > 0 ? `${hours}h ${minutes}m ${remainingSeconds}s` : `${minutes}m ${remainingSeconds}s`;
 }
 
 function statusTone(status: string): "success" | "warning" | "danger" | "muted" {
@@ -435,6 +452,9 @@ function JobDetails({ token, jobId, back, openJob }: { token: string; jobId: str
       </aside>}
       <div className="detail-links"><a className="primary-button link-button" href={payload.links.scriberr}>Open in Scriberr ↗</a>{payload.links.notion && <a className="secondary-button link-button" href={payload.links.notion}>Open in Notion ↗</a>}</div>
       <div className="detail-grid">
+        <DetailValue label="Filename" value={job.recording.filename ?? "—"} />
+        <DetailValue label="Duration" value={formatDuration(job.recording.durationSeconds)} />
+        <DetailValue label="File size" value={formatFileSize(job.recording.sizeBytes)} />
         <DetailValue label="Attempt" value={String(job.attempt)} />
         <DetailValue label="Source" value={job.source} />
         <DetailValue label="Discovered" value={formatTime(job.firstSeenAt)} />

@@ -75,6 +75,7 @@ test("existing not-found jobs migrate to the missing terminal state", () => {
 
     db = new StateStore(dbPath);
     assert.equal(db.getJob("missing-job")?.sidecar_state, "job_missing");
+    assert.equal(db.getJob("missing-job")?.recording_filename, "Missing recording.mp3");
     assert.deepEqual(db.jobStateHistory("missing-job").map((entry) => entry.sidecar_state), ["job_missing", "discovered"]);
   } finally {
     if (db) {

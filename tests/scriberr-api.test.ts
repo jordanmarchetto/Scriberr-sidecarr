@@ -156,6 +156,34 @@ test("lists recently updated jobs through the reconciliation endpoint", async ()
   }
 });
 
+test("reads audio size with a one-byte range request", async () => {
+  let range = "";
+  let apiKey = "";
+  const server = createServer((request, response) => {
+    range = request.headers.range ?? "";
+    apiKey = String(request.headers["x-api-key"] ?? "");
+    response.writeHead(206, {
+      "Content-Type": "audio/mpeg",
+      "Content-Length": "1",
+      "Content-Range": "bytes 0-0/43133720"
+    });
+    response.end(new Uint8Array([1]));
+  });
+
+  try {
+    const url = await listen(server);
+    const api = new ScriberrApi(loadConfig({
+      SIDECARR_SCRIBERR_URL: url,
+      SIDECARR_SCRIBERR_API_KEY: "api-key"
+    }));
+    assert.deepEqual(await api.getAudioMetadata("job-1"), { sizeBytes: 43_133_720 });
+    assert.equal(range, "bytes=0-0");
+    assert.equal(apiKey, "api-key");
+  } finally {
+    await close(server);
+  }
+});
+
 test("rate limits repeated connection retry warnings while preserving failures", async () => {
   const captured = captureLogger();
   const api = new ScriberrApi(loadConfig({

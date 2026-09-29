@@ -117,6 +117,10 @@ export class StateStore {
         job_ready_at TEXT,
         job_ready_outcome TEXT,
         job_ready_suppressed INTEGER NOT NULL DEFAULT 0,
+        recording_filename TEXT,
+        recording_size_bytes INTEGER,
+        recording_duration_seconds REAL,
+        recording_metadata_checked_at TEXT,
         last_error TEXT,
         created_at TEXT NOT NULL,
         updated_at TEXT NOT NULL
@@ -266,6 +270,22 @@ export class StateStore {
     if (!jobColumns.some((column) => column.name === "job_ready_suppressed")) {
       this.db.exec("ALTER TABLE jobs ADD COLUMN job_ready_suppressed INTEGER NOT NULL DEFAULT 0");
     }
+    if (!jobColumns.some((column) => column.name === "recording_filename")) {
+      this.db.exec("ALTER TABLE jobs ADD COLUMN recording_filename TEXT");
+    }
+    if (!jobColumns.some((column) => column.name === "recording_size_bytes")) {
+      this.db.exec("ALTER TABLE jobs ADD COLUMN recording_size_bytes INTEGER");
+    }
+    if (!jobColumns.some((column) => column.name === "recording_duration_seconds")) {
+      this.db.exec("ALTER TABLE jobs ADD COLUMN recording_duration_seconds REAL");
+    }
+    if (!jobColumns.some((column) => column.name === "recording_metadata_checked_at")) {
+      this.db.exec("ALTER TABLE jobs ADD COLUMN recording_metadata_checked_at TEXT");
+    }
+    this.db.prepare(`
+      UPDATE jobs SET recording_filename = title
+      WHERE recording_filename IS NULL AND title IS NOT NULL AND TRIM(title) <> ''
+    `).run();
     const signalColumns = this.db.prepare("PRAGMA table_info(webhook_signals)").all() as Array<{ name: string }>;
     if (!signalColumns.some((column) => column.name === "error_message")) {
       this.db.exec("ALTER TABLE webhook_signals ADD COLUMN error_message TEXT");
@@ -354,16 +374,16 @@ export class StateStore {
       this.db.prepare(`
         UPDATE jobs
         SET last_seen_at = ?, transcript_folder = CASE WHEN ? <> '' THEN ? ELSE transcript_folder END,
-          title = COALESCE(?, title), updated_at = ?
+          title = COALESCE(?, title), recording_filename = COALESCE(recording_filename, ?), updated_at = ?
         WHERE job_id = ?
-      `).run(now, folder, folder, title?.trim() || null, now, jobId);
+      `).run(now, folder, folder, title?.trim() || null, title?.trim() || null, now, jobId);
       return { inserted: false, job: this.getJob(jobId)! };
     }
     this.db.prepare(`
-      INSERT INTO jobs (job_id, title, source, transcript_folder, first_seen_at, last_seen_at,
+      INSERT INTO jobs (job_id, title, recording_filename, source, transcript_folder, first_seen_at, last_seen_at,
         sidecar_state, attempt, created_at, updated_at)
-      VALUES (?, ?, ?, ?, ?, ?, 'discovered', 1, ?, ?)
-    `).run(jobId, title?.trim() || null, source, folder, now, now, now, now);
+      VALUES (?, ?, ?, ?, ?, ?, ?, 'discovered', 1, ?, ?)
+    `).run(jobId, title?.trim() || null, title?.trim() || null, source, folder, now, now, now, now);
     const job = this.getJob(jobId)!;
     this.recordJobState(job, now);
     return { inserted: true, job };

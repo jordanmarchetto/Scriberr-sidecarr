@@ -14,6 +14,10 @@ export type ScriberrJob = {
   is_multi_track?: boolean;
 };
 
+export type ScriberrAudioMetadata = {
+  sizeBytes: number | null;
+};
+
 export type ScriberrJobListResponse = {
   jobs: ScriberrJob[];
   pagination: {
@@ -62,6 +66,10 @@ export type JobRow = {
   job_ready_at: string | null;
   job_ready_outcome: "ready" | "ready_with_warnings" | null;
   job_ready_suppressed: number;
+  recording_filename: string | null;
+  recording_size_bytes: number | null;
+  recording_duration_seconds: number | null;
+  recording_metadata_checked_at: string | null;
   last_error: string | null;
   created_at: string;
   updated_at: string;

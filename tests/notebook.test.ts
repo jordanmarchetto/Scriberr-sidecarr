@@ -235,7 +235,13 @@ test("sends versioned, authenticated Notion page requests without leaking read-o
 test("creates and progressively updates a page without touching user Notes", async () => {
   const value = scenario();
   try {
-    const discovered = value.db.discover(jobId, "/watch/job", "2026-09-12T12:00:00Z").job;
+    value.db.discover(jobId, "/watch/job", "2026-09-12T12:00:00Z");
+    value.db.updateJob(jobId, {
+      recording_filename: "appointment.mp3",
+      recording_size_bytes: 43_133_720,
+      recording_duration_seconds: 1078.343
+    });
+    const discovered = value.db.getJob(jobId)!;
     const publisher = new NotionPublisher(
       value.config,
       value.db,
@@ -268,6 +274,12 @@ test("creates and progressively updates a page without touching user Notes", asy
     assert.equal(topLevel.filter((block) => block.type === "table").length, 0);
     assert.equal(topLevel.some((block) => blockText(block).startsWith("Sidecarr Job ID:")), false);
     assert.equal((await value.notion.children(details.id)).filter((block) => block.type === "table").length, 2);
+    const metadataTable = (await value.notion.children(details.id)).find((block) => block.type === "table");
+    assert.ok(metadataTable);
+    const metadataText = JSON.stringify(await value.notion.children(metadataTable.id));
+    assert.match(metadataText, /Filename.*appointment\.mp3/);
+    assert.match(metadataText, /Duration.*17m 58s/);
+    assert.match(metadataText, /File size.*41\.1 MiB/);
     const userNote = (await value.notion.appendChildren(page.page_id, [{
       object: "block",
       type: "paragraph",
