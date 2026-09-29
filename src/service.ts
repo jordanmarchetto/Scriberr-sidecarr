@@ -231,7 +231,11 @@ export class SidecarService {
 
     if (summaryContent) {
       this.db.updateJob(row.job_id, { summary_expected: 1 });
-      this.transition(current, "summary_complete", "summary_complete", job.status, job.title);
+      // A terminal job may be polled once to backfill recording metadata. Keep its
+      // ready state even when the notebook can no longer be synchronized.
+      if (current.sidecar_state !== "job_ready") {
+        this.transition(current, "summary_complete", "summary_complete", job.status, job.title);
+      }
       return;
     }
 
