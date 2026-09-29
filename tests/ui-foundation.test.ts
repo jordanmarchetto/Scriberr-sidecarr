@@ -320,6 +320,7 @@ test("operations APIs expose authenticated metadata without content payloads", a
       lastCheckedAt: null,
       updatedAt: value.db.getJob(jobId)!.updated_at,
       readyAt: "2026-09-24T12:05:00Z",
+      likelyDuplicateCount: 0,
       error: null
     }]);
     assert.equal(listBody.pagination.total, 1);
@@ -372,5 +373,23 @@ test("jobs API presents concise statuses for empty, active, ready, warning, and 
     const body = await response.json() as { jobs: Array<{ id: string; status: string; active: boolean }> };
     const actual = new Map(body.jobs.map((job) => [job.id, { status: job.status, active: job.active }]));
     for (const item of cases) assert.deepEqual(actual.get(item.id), { status: item.expected, active: item.active });
+  });
+});
+
+test("jobs API identifies same-filename recordings discovered within one hour", async () => {
+  const value = scenario();
+  const request: typeof fetch = async () => Response.json({ ok: true });
+  value.db.discover("first", "", "2026-09-29T14:00:00Z", "webhook", "Standard recording 31.mp3");
+  value.db.discover("duplicate", "", "2026-09-29T14:45:00Z", "webhook", "standard RECORDING 31.mp3");
+  value.db.discover("later", "", "2026-09-29T16:00:00Z", "webhook", "Standard recording 31.mp3");
+  await withServer(value, request, async (origin) => {
+    const headers = { Authorization: "Bearer browser-token" };
+    const list = await (await fetch(`${origin}/sidecarr/api/jobs`, { headers })).json() as { jobs: Array<{ id: string; likelyDuplicateCount: number }> };
+    assert.equal(list.jobs.find((job) => job.id === "first")?.likelyDuplicateCount, 1);
+    assert.equal(list.jobs.find((job) => job.id === "duplicate")?.likelyDuplicateCount, 1);
+    assert.equal(list.jobs.find((job) => job.id === "later")?.likelyDuplicateCount, 0);
+
+    const detail = await (await fetch(`${origin}/sidecarr/api/jobs/first`, { headers })).json() as { likelyDuplicates: Array<{ id: string }> };
+    assert.deepEqual(detail.likelyDuplicates.map((job) => job.id), ["duplicate"]);
   });
 });

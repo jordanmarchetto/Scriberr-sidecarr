@@ -87,3 +87,21 @@ test("operations queries paginate recent jobs and retain state history", () => {
     rmSync(directory, { recursive: true, force: true });
   }
 });
+
+test("likely duplicate jobs share a normalized title within one hour", () => {
+  const directory = mkdtempSync(path.join(tmpdir(), "scriberr-sidecarr-duplicates-"));
+  const db = new StateStore(path.join(directory, "state.db"));
+  try {
+    db.discover("original", "", "2026-09-29T14:00:00Z", "webhook", "Standard recording 31.mp3");
+    db.discover("nearby-before", "", "2026-09-29T13:00:00Z", "webhook", " standard RECORDING 31.mp3 ");
+    db.discover("nearby-after", "", "2026-09-29T15:00:00Z", "webhook", "Standard recording 31.mp3");
+    db.discover("too-late", "", "2026-09-29T15:00:01Z", "webhook", "Standard recording 31.mp3");
+    db.discover("different-name", "", "2026-09-29T14:10:00Z", "webhook", "Standard recording 32.mp3");
+
+    assert.deepEqual(db.likelyDuplicateJobs("original").map((job) => job.job_id), ["nearby-after", "nearby-before"]);
+    assert.deepEqual(db.likelyDuplicateJobs("missing"), []);
+  } finally {
+    db.close();
+    rmSync(directory, { recursive: true, force: true });
+  }
+});

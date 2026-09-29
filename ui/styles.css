@@ -114,6 +114,7 @@ h1 { margin: 0; font-size: clamp(32px, 4vw, 46px); letter-spacing: -.04em; }
 .failure-row { grid-template-columns: auto minmax(0, 1fr) auto auto; }
 .failure-row > span:nth-child(2), .job-title { min-width: 0; display: grid; gap: 4px; }
 .failure-row small, .job-title small { overflow: hidden; color: var(--muted); font-size: 12px; text-overflow: ellipsis; white-space: nowrap; }
+.job-title em { width: fit-content; color: color-mix(in srgb, var(--warning) 82%, var(--text)); font-size: 11px; font-style: normal; font-weight: 700; }
 .failure-row time, .job-row time { color: var(--muted); font-size: 12px; }
 .status-badge { width: fit-content; padding: 5px 8px; border-radius: 999px; background: var(--bg); color: var(--muted); font-size: 11px; font-weight: 750; text-transform: capitalize; white-space: nowrap; }
 .status-badge.success { background: color-mix(in srgb, var(--success) 14%, var(--panel)); color: var(--success); }
@@ -129,6 +130,13 @@ h1 { margin: 0; font-size: clamp(32px, 4vw, 46px); letter-spacing: -.04em; }
 .job-id { margin: 9px 0 0; color: var(--muted); font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 12px; overflow-wrap: anywhere; }
 .heading-actions { display: flex; align-items: center; gap: 10px; }
 .detail-links { margin: -10px 0 24px; display: flex; gap: 10px; flex-wrap: wrap; }
+.duplicate-banner { margin: 0 0 24px; padding: 18px; border: 1px solid color-mix(in srgb, var(--warning) 45%, var(--border)); border-radius: 14px; background: color-mix(in srgb, var(--warning) 10%, var(--panel)); display: grid; grid-template-columns: minmax(0, 1fr) minmax(260px, .8fr); gap: 20px; }
+.duplicate-banner p { margin: 6px 0 0; color: var(--muted); font-size: 13px; line-height: 1.5; }
+.duplicate-links { display: grid; gap: 7px; }
+.duplicate-links button { width: 100%; padding: 10px 12px; border: 1px solid var(--border); border-radius: 9px; background: var(--panel); color: var(--text); display: grid; grid-template-columns: minmax(0, 1fr) auto auto; align-items: center; gap: 10px; text-align: left; }
+.duplicate-links button:hover { border-color: var(--accent); }
+.duplicate-links span { color: var(--muted); font-size: 11px; }
+.duplicate-links strong { font-size: 11px; }
 .detail-grid { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 12px; }
 .detail-grid article { min-width: 0; padding: 17px; border: 1px solid var(--border); border-radius: 12px; background: var(--panel); }
 .detail-grid span, .destination-card header span:first-child { display: block; margin-bottom: 7px; color: var(--muted); font-size: 11px; font-weight: 700; letter-spacing: .06em; text-transform: uppercase; }
@@ -204,6 +212,7 @@ h1 { margin: 0; font-size: clamp(32px, 4vw, 46px); letter-spacing: -.04em; }
   .content { padding: 40px 20px 110px; }
   .card-grid { grid-template-columns: 1fr; }
   .health-grid, .destination-grid { grid-template-columns: 1fr; }
+  .duplicate-banner { grid-template-columns: 1fr; }
   .detail-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); }
   .settings-fields { grid-template-columns: 1fr; }
   .card { min-height: auto; }
