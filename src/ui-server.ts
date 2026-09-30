@@ -698,7 +698,9 @@ export class UiServer {
       if (!info.isFile()) throw new Error("not a file");
       const file = await readFile(filePath);
       const body = requested === "index.html"
-        ? Buffer.from(file.toString("utf8").replaceAll("__SIDECARR_BASE_PATH__", this.basePath))
+        ? Buffer.from(file.toString("utf8")
+          .replaceAll("__SIDECARR_BASE_PATH__", this.basePath)
+          .replaceAll("__SIDECARR_ASSET_BASE__", this.basePath.replace(/^\/+/, "")))
         : file;
       const immutable = requested.startsWith("assets/");
       response.writeHead(200, {
