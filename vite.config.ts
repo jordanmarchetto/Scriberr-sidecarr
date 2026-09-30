@@ -3,7 +3,7 @@ import react from "@vitejs/plugin-react";
 
 export default defineConfig({
   root: "ui",
-  base: "./",
+  base: "/__SIDECARR_ASSET_BASE__/",
   plugins: [react()],
   build: {
     outDir: "../ui-dist",

@@ -180,10 +180,17 @@ test("base-path assets and client routes are served without intercepting webhook
     const redirect = await fetch(`${origin}/sidecarr`, { redirect: "manual" });
     assert.equal(redirect.status, 308);
     assert.equal(redirect.headers.get("location"), "/sidecarr/");
-    const index = await fetch(`${origin}/sidecarr/jobs`);
+    const routeUrl = `${origin}/sidecarr/jobs/job-1`;
+    const index = await fetch(routeUrl);
     assert.equal(index.status, 200);
-    assert.match(await index.text(), /content="\/sidecarr"/);
-    const cssName = readFileSync(path.join(uiRoot, "index.html"), "utf8").match(/\.\/assets\/([^"']+\.css)/)?.[1];
+    const indexHtml = await index.text();
+    assert.match(indexHtml, /content="\/sidecarr"/);
+    const scriptSource = indexHtml.match(/<script[^>]+src="([^"]+)"/)?.[1];
+    assert.ok(scriptSource);
+    const scriptUrl = new URL(scriptSource, routeUrl);
+    assert.equal(scriptUrl.pathname.startsWith("/sidecarr/assets/"), true);
+    assert.equal((await fetch(scriptUrl)).status, 200);
+    const cssName = readFileSync(path.join(uiRoot, "index.html"), "utf8").match(/assets\/([^"']+\.css)/)?.[1];
     assert.ok(cssName);
     assert.match(await (await fetch(`${origin}/sidecarr/assets/${cssName}`)).text(), /@media \(width<=420px\)/);
 
