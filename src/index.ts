@@ -79,7 +79,21 @@ try {
     auth,
     logger,
     db,
-    () => ({ scriberr: configuration.current.canProcess ? runtime.status : "configuration_required", discoveryMode: runtime.discoveryMode })
+    () => ({ scriberr: configuration.current.canProcess ? runtime.status : "configuration_required", discoveryMode: runtime.discoveryMode }),
+    undefined,
+    {
+      requestRetranscription: async (jobId) => {
+        const action = await runtime.actions.requestRetranscription(jobId);
+        void runCycle().catch((error) => logger.error({ err: error, jobId }, "cycle failed after re-transcription request"));
+        return action;
+      },
+      cancelRetranscription: (jobId) => runtime.actions.cancelRetranscription(jobId),
+      dismissNotionWarning: (jobId) => runtime.actions.dismissNotionWarning(jobId),
+      recreateNotionPage: async (jobId) => {
+        runtime.actions.recreateNotionPage(jobId);
+        await runCycle();
+      }
+    }
   );
   const receiver = new WebhookReceiver(
     () => ({ ...configuration.current.config, webhookSecret: runtime.webhookSecret }),

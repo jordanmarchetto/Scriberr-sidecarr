@@ -37,10 +37,11 @@ function scenario(env: NodeJS.ProcessEnv = {}): {
 async function withServer(
   value: ReturnType<typeof scenario>,
   request: typeof fetch,
-  work: (origin: string) => Promise<void>
+  work: (origin: string) => Promise<void>,
+  actions?: ConstructorParameters<typeof UiServer>[7]
 ): Promise<void> {
   const auth = new ScriberrBrowserAuth(() => value.configuration.current.config, request);
-  const ui = new UiServer(() => value.configuration.current.config, value.configuration, auth, logger, value.db, () => ({ scriberr: "ready", discoveryMode: "webhook" }), uiRoot);
+  const ui = new UiServer(() => value.configuration.current.config, value.configuration, auth, logger, value.db, () => ({ scriberr: "ready", discoveryMode: "webhook" }), uiRoot, actions);
   const receiver = new WebhookReceiver(value.config, value.db, () => undefined, logger, new Metrics(), () => "ready", ui);
   try {
     await receiver.listen(0, "127.0.0.1");
@@ -394,4 +395,44 @@ test("jobs API identifies same-filename recordings discovered within one hour", 
     const detail = await (await fetch(`${origin}/sidecarr/api/jobs/first`, { headers })).json() as { likelyDuplicates: Array<{ id: string }> };
     assert.deepEqual(detail.likelyDuplicates.map((job) => job.id), ["duplicate"]);
   });
+});
+
+test("job actions require same-origin authentication and expose durable re-transcription state", async () => {
+  const value = scenario();
+  const request: typeof fetch = async () => Response.json({ ok: true });
+  value.db.discover("action-job", "", "2026-09-30T12:00:00Z", "webhook", "Appointment.mp3");
+  value.db.updateJob("action-job", { sidecar_state: "summary_processing", scriberr_status: "completed" });
+  let requests = 0;
+  const actions: NonNullable<ConstructorParameters<typeof UiServer>[7]> = {
+    requestRetranscription: async (jobId) => {
+      requests += 1;
+      return value.db.enqueueRetranscription(jobId, "2026-09-30T12:05:00Z");
+    },
+    cancelRetranscription: (jobId) => {
+      value.db.cancelRetranscription(jobId, "2026-09-30T12:06:00Z");
+      return value.db.latestJobAction(jobId)!;
+    },
+    dismissNotionWarning: () => undefined,
+    recreateNotionPage: async () => undefined
+  };
+
+  await withServer(value, request, async (origin) => {
+    const endpoint = `${origin}/sidecarr/api/jobs/action-job/actions/retranscribe`;
+    const auth = { Authorization: "Bearer browser-token", "X-Sidecarr-Request": "1" };
+    assert.equal((await fetch(endpoint, { method: "POST", headers: auth })).status, 403);
+    assert.equal((await fetch(endpoint, { method: "POST", headers: { ...auth, Origin: "https://evil.test" } })).status, 403);
+
+    const queued = await fetch(endpoint, { method: "POST", headers: { ...auth, Origin: origin } });
+    assert.equal(queued.status, 202);
+    assert.equal(requests, 1);
+    const detail = await (await fetch(`${origin}/sidecarr/api/jobs/action-job`, { headers: { Authorization: "Bearer browser-token" } })).json() as {
+      actions: { retranscription: { latest: { status: string }; canCancel: boolean } };
+    };
+    assert.equal(detail.actions.retranscription.latest.status, "queued");
+    assert.equal(detail.actions.retranscription.canCancel, true);
+
+    const cancelled = await fetch(endpoint, { method: "DELETE", headers: { ...auth, Origin: origin } });
+    assert.equal(cancelled.status, 200);
+    assert.equal(value.db.latestJobAction("action-job")?.status, "cancelled");
+  }, actions);
 });

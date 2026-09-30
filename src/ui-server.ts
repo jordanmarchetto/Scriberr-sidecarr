@@ -7,8 +7,9 @@ import { ConfigurationConflictError, ConfigurationManager } from "./configuratio
 import { BrowserAuthError, ScriberrBrowserAuth, type BrowserAuthentication } from "./browser-auth.js";
 import { StateStore } from "./db.js";
 import { sanitizeError } from "./errors.js";
+import { JobActionError } from "./job-action-service.js";
 import type { ScriberrReadinessStatus } from "./scriberr-readiness.js";
-import type { JobRow, SidecarState } from "./types.js";
+import type { JobActionRow, JobRow, SidecarState } from "./types.js";
 
 const maxApiBodyBytes = 64 * 1024;
 const settingsGroups = ["scriberr", "discovery", "notion", "mqtt", "notifications", "summaries"] as const;
@@ -35,6 +36,13 @@ type OperationsStatus = {
   discoveryMode: "webhook" | "filesystem";
 };
 
+type UiActions = {
+  requestRetranscription(jobId: string): Promise<JobActionRow>;
+  cancelRetranscription(jobId: string): JobActionRow;
+  dismissNotionWarning(jobId: string): void;
+  recreateNotionPage(jobId: string): Promise<void>;
+};
+
 const activeJobStates = new Set<SidecarState>([
   "discovered",
   "pending_transcription",
@@ -54,7 +62,8 @@ export class UiServer {
     private readonly logger: pino.Logger,
     private readonly db: StateStore,
     private readonly operationsStatus: () => OperationsStatus = () => ({ scriberr: "waiting", discoveryMode: "filesystem" }),
-    private readonly assetsPath = path.resolve("ui-dist")
+    private readonly assetsPath = path.resolve("ui-dist"),
+    private readonly actions?: UiActions
   ) {
     this.basePath = config().uiBasePath;
   }
@@ -78,6 +87,21 @@ export class UiServer {
     }
     if (url.pathname === `${this.basePath}/api/jobs`) {
       await this.jobs(request, response, url);
+      return true;
+    }
+    const retranscriptionMatch = url.pathname.match(new RegExp(`^${this.basePath}/api/jobs/([^/]+)/actions/retranscribe$`));
+    if (retranscriptionMatch) {
+      await this.retranscriptionAction(request, response, retranscriptionMatch[1]);
+      return true;
+    }
+    const notionWarningMatch = url.pathname.match(new RegExp(`^${this.basePath}/api/jobs/([^/]+)/actions/notion-warning$`));
+    if (notionWarningMatch) {
+      await this.notionWarningAction(request, response, notionWarningMatch[1]);
+      return true;
+    }
+    const notionPageMatch = url.pathname.match(new RegExp(`^${this.basePath}/api/jobs/([^/]+)/actions/notion-page$`));
+    if (notionPageMatch) {
+      await this.notionPageAction(request, response, notionPageMatch[1]);
       return true;
     }
     const jobMatch = url.pathname.match(new RegExp(`^${this.basePath}/api/jobs/([^/]+)$`));
@@ -261,7 +285,11 @@ export class UiServer {
           key: "notion",
           label: "Notion",
           status: status(config.notebookProvider === "notion", failures.notion > 0),
-          detail: config.notebookProvider === "notion" ? "Notebook publishing is enabled." : "Not configured."
+          detail: config.notebookProvider !== "notion"
+            ? "Not configured."
+            : failures.notion > 0
+              ? `${failures.notion} ${failures.notion === 1 ? "job needs" : "jobs need"} attention. See Recent failures below.`
+              : "Notebook publishing is healthy."
         },
         {
           key: "mqtt",
@@ -322,12 +350,15 @@ export class UiServer {
     }
     const notion = this.db.getNotebookPage(jobId, "notion");
     const notionOperations = this.db.notebookOperations(jobId);
-    const notionStatus = notionOperations.some((operation) => operation.status === "failed")
+    const latestRetranscription = this.db.latestJobAction(jobId);
+    const unresolvedNotionOperations = notionOperations.filter((operation) => operation.status === "failed" && !operation.acknowledged_at);
+    const notionStatus = unresolvedNotionOperations.length > 0
       ? "needs attention"
       : notion?.last_status ? "synchronized" : "pending";
     const likelyDuplicates = this.db.likelyDuplicateJobs(jobId);
     this.respondJson(response, 200, {
       job: this.safeJob(job, likelyDuplicates.length),
+      warnings: this.jobWarnings(job, notion?.audio_state, unresolvedNotionOperations.length),
       likelyDuplicates: likelyDuplicates.map((candidate) => ({
         id: candidate.job_id,
         title: candidate.title ?? `Scriberr job ${candidate.job_id}`,
@@ -353,9 +384,10 @@ export class UiServer {
           updatedAt: notion.updated_at,
           operations: notionOperations.map((operation) => ({
             operation: operation.operation,
-            status: operation.status,
+            status: operation.acknowledged_at ? "dismissed" : operation.status,
             attempts: operation.attempts,
             error: operation.last_error ? sanitizeError(operation.last_error) : null,
+            acknowledgedAt: operation.acknowledged_at,
             updatedAt: operation.updated_at,
             completedAt: operation.completed_at
           }))
@@ -377,8 +409,121 @@ export class UiServer {
           createdAt: delivery.created_at,
           deliveredAt: delivery.delivered_at
         }))
+      },
+      actions: {
+        retranscription: {
+          latest: latestRetranscription ?? null,
+          canRequest: !["pending", "processing"].includes(job.scriberr_status ?? "")
+            && job.sidecar_state !== "job_missing"
+            && !["queued", "starting"].includes(latestRetranscription?.status ?? ""),
+          canCancel: latestRetranscription?.status === "queued"
+        },
+        notion: {
+          canDismiss: unresolvedNotionOperations.length > 0,
+          canRecreate: Boolean(notion && unresolvedNotionOperations.length > 0)
+        }
       }
     });
+  }
+
+  private jobWarnings(job: JobRow, audioState?: string, notionFailures = 0): Array<{ code: string; title: string; message: string; actionRequired: boolean }> {
+    const warnings: Array<{ code: string; title: string; message: string; actionRequired: boolean }> = [];
+    if (audioState === "skipped") {
+      const size = job.recording_size_bytes;
+      const reason = size !== null && size > 20 * 1024 * 1024
+        ? "The recording exceeds Notion's 20 MiB simple-upload limit."
+        : "Notion could not embed this recording because of its size or media format.";
+      warnings.push({
+        code: "notion_audio_skipped",
+        title: "Audio is linked instead of embedded in Notion",
+        message: `${reason} No action is required; the recording remains available in Scriberr.`,
+        actionRequired: false
+      });
+    }
+    if (job.sidecar_state === "summary_failed") {
+      warnings.push({ code: "summary_failed", title: "Summary generation failed", message: job.last_error ?? "Re-transcribe or retry summary generation in Scriberr.", actionRequired: true });
+    }
+    if (notionFailures > 0) {
+      warnings.push({ code: "notion_sync_failed", title: "Notion needs attention", message: "Restore or re-share the page, dismiss the warning, or recreate the managed page.", actionRequired: true });
+    }
+    return warnings;
+  }
+
+  private async retranscriptionAction(request: IncomingMessage, response: ServerResponse, encodedJobId: string): Promise<void> {
+    if (!this.actions) return this.respondJson(response, 503, { error: "Job actions are unavailable" });
+    if (request.method !== "POST" && request.method !== "DELETE") {
+      response.setHeader("Allow", "POST, DELETE");
+      return this.respondJson(response, 405, { error: "method not allowed" });
+    }
+    if (!await this.authorizeMutation(request, response)) return;
+    const jobId = this.decodedJobId(encodedJobId, response);
+    if (!jobId) return;
+    try {
+      await this.discardBody(request);
+      const action = request.method === "POST"
+        ? await this.actions.requestRetranscription(jobId)
+        : this.actions.cancelRetranscription(jobId);
+      this.respondJson(response, request.method === "POST" ? 202 : 200, { action });
+    } catch (error) {
+      this.actionError(response, error);
+    }
+  }
+
+  private async notionWarningAction(request: IncomingMessage, response: ServerResponse, encodedJobId: string): Promise<void> {
+    if (request.method !== "DELETE") return this.methodNotAllowed(response, "DELETE");
+    if (!this.actions) return this.respondJson(response, 503, { error: "Job actions are unavailable" });
+    if (!await this.authorizeMutation(request, response)) return;
+    const jobId = this.decodedJobId(encodedJobId, response);
+    if (!jobId) return;
+    try {
+      await this.discardBody(request);
+      this.actions.dismissNotionWarning(jobId);
+      this.respondJson(response, 200, { dismissed: true });
+    } catch (error) {
+      this.actionError(response, error);
+    }
+  }
+
+  private async notionPageAction(request: IncomingMessage, response: ServerResponse, encodedJobId: string): Promise<void> {
+    if (request.method !== "POST") return this.methodNotAllowed(response, "POST");
+    if (!this.actions) return this.respondJson(response, 503, { error: "Job actions are unavailable" });
+    if (!await this.authorizeMutation(request, response)) return;
+    const jobId = this.decodedJobId(encodedJobId, response);
+    if (!jobId) return;
+    try {
+      await this.discardBody(request);
+      await this.actions.recreateNotionPage(jobId);
+      this.respondJson(response, 202, { recreating: true });
+    } catch (error) {
+      this.actionError(response, error);
+    }
+  }
+
+  private async authorizeMutation(request: IncomingMessage, response: ServerResponse): Promise<boolean> {
+    if (!this.validMutationOrigin(request) || request.headers["x-sidecarr-request"] !== "1") {
+      this.respondJson(response, 403, { error: "request origin rejected" });
+      return false;
+    }
+    return Boolean(await this.authenticated(request, response));
+  }
+
+  private decodedJobId(encoded: string, response: ServerResponse): string | undefined {
+    try {
+      return decodeURIComponent(encoded);
+    } catch {
+      this.respondJson(response, 400, { error: "invalid job ID" });
+      return undefined;
+    }
+  }
+
+  private actionError(response: ServerResponse, error: unknown): void {
+    const status = error instanceof JobActionError ? error.status : 502;
+    this.respondJson(response, status, { error: error instanceof JobActionError ? error.message : "Unable to complete the job action" });
+  }
+
+  private methodNotAllowed(response: ServerResponse, method: string): void {
+    response.setHeader("Allow", method);
+    this.respondJson(response, 405, { error: "method not allowed" });
   }
 
   private safeJob(job: JobRow, likelyDuplicateCount = 0): object {

@@ -1,7 +1,7 @@
 import Database from "better-sqlite3";
 import { chmodSync } from "node:fs";
 import { sanitizeError } from "./errors.js";
-import type { JobRow, JobStateHistoryRow, ScriberrWebhookPayload, SidecarState, WebhookSignalRow } from "./types.js";
+import type { JobActionRow, JobRow, JobStateHistoryRow, ScriberrWebhookPayload, SidecarState, WebhookSignalRow } from "./types.js";
 
 export type PendingEvent = {
   id: number;
@@ -86,6 +86,7 @@ export type NotebookOperationRow = {
   created_at: string;
   updated_at: string;
   completed_at: string | null;
+  acknowledged_at: string | null;
 };
 
 export class StateStore {
@@ -114,6 +115,7 @@ export class StateStore {
         summary_started_at TEXT,
         summary_deadline_at TEXT,
         summary_expected INTEGER,
+        summary_baseline_id TEXT,
         job_ready_at TEXT,
         job_ready_outcome TEXT,
         job_ready_suppressed INTEGER NOT NULL DEFAULT 0,
@@ -224,6 +226,21 @@ export class StateStore {
       CREATE INDEX IF NOT EXISTS notebook_operations_pending_idx
         ON notebook_operations(status, id);
 
+      CREATE TABLE IF NOT EXISTS job_actions (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        job_id TEXT NOT NULL,
+        action TEXT NOT NULL,
+        status TEXT NOT NULL,
+        requested_at TEXT NOT NULL,
+        updated_at TEXT NOT NULL,
+        started_at TEXT,
+        cancelled_at TEXT,
+        error TEXT
+      );
+
+      CREATE UNIQUE INDEX IF NOT EXISTS job_actions_active_idx
+        ON job_actions(job_id, action) WHERE status IN ('queued', 'starting');
+
       CREATE TABLE IF NOT EXISTS notification_deliveries (
         id INTEGER PRIMARY KEY AUTOINCREMENT,
         job_id TEXT NOT NULL,
@@ -261,6 +278,9 @@ export class StateStore {
     if (!jobColumns.some((column) => column.name === "summary_expected")) {
       this.db.exec("ALTER TABLE jobs ADD COLUMN summary_expected INTEGER");
     }
+    if (!jobColumns.some((column) => column.name === "summary_baseline_id")) {
+      this.db.exec("ALTER TABLE jobs ADD COLUMN summary_baseline_id TEXT");
+    }
     if (!jobColumns.some((column) => column.name === "job_ready_at")) {
       this.db.exec("ALTER TABLE jobs ADD COLUMN job_ready_at TEXT");
     }
@@ -281,6 +301,10 @@ export class StateStore {
     }
     if (!jobColumns.some((column) => column.name === "recording_metadata_checked_at")) {
       this.db.exec("ALTER TABLE jobs ADD COLUMN recording_metadata_checked_at TEXT");
+    }
+    const operationColumns = this.db.prepare("PRAGMA table_info(notebook_operations)").all() as Array<{ name: string }>;
+    if (!operationColumns.some((column) => column.name === "acknowledged_at")) {
+      this.db.exec("ALTER TABLE notebook_operations ADD COLUMN acknowledged_at TEXT");
     }
     this.db.prepare(`
       UPDATE jobs SET recording_filename = title
@@ -481,9 +505,80 @@ export class StateStore {
   notebookOperations(jobId: string): NotebookOperationRow[] {
     return this.db.prepare(`
       SELECT id, job_id, provider, operation_key, operation, attempts, status, last_error,
-        created_at, updated_at, completed_at
+        created_at, updated_at, completed_at, acknowledged_at
       FROM notebook_operations WHERE job_id = ? ORDER BY id DESC
     `).all(jobId) as NotebookOperationRow[];
+  }
+
+  latestJobAction(jobId: string, action = "retranscribe"): JobActionRow | undefined {
+    return this.db.prepare(`
+      SELECT * FROM job_actions WHERE job_id = ? AND action = ? ORDER BY id DESC LIMIT 1
+    `).get(jobId, action) as JobActionRow | undefined;
+  }
+
+  enqueueRetranscription(jobId: string, now = new Date().toISOString()): JobActionRow {
+    return this.db.transaction(() => {
+      const existing = this.db.prepare(`
+        SELECT * FROM job_actions
+        WHERE job_id = ? AND action = 'retranscribe' AND status IN ('queued', 'starting')
+        ORDER BY id DESC LIMIT 1
+      `).get(jobId) as JobActionRow | undefined;
+      if (existing) return existing;
+      this.db.prepare(`
+        INSERT INTO job_actions (job_id, action, status, requested_at, updated_at)
+        VALUES (?, 'retranscribe', 'queued', ?, ?)
+      `).run(jobId, now, now);
+      return this.latestJobAction(jobId)!;
+    })();
+  }
+
+  queuedRetranscriptions(limit = 20): JobActionRow[] {
+    return this.db.prepare(`
+      SELECT * FROM job_actions WHERE action = 'retranscribe' AND status = 'queued'
+      ORDER BY requested_at LIMIT ?
+    `).all(Math.max(1, Math.min(100, Math.floor(limit)))) as JobActionRow[];
+  }
+
+  claimJobAction(id: number, now = new Date().toISOString()): boolean {
+    return this.db.prepare(`
+      UPDATE job_actions SET status = 'starting', updated_at = ?, error = NULL
+      WHERE id = ? AND status = 'queued'
+    `).run(now, id).changes === 1;
+  }
+
+  completeJobAction(id: number, now = new Date().toISOString()): void {
+    this.db.prepare(`
+      UPDATE job_actions SET status = 'started', started_at = ?, updated_at = ?, error = NULL WHERE id = ?
+    `).run(now, now, id);
+  }
+
+  failJobAction(id: number, error: string, now = new Date().toISOString()): void {
+    this.db.prepare(`
+      UPDATE job_actions SET status = 'failed', error = ?, updated_at = ? WHERE id = ?
+    `).run(sanitizeError(error), now, id);
+  }
+
+  cancelRetranscription(jobId: string, now = new Date().toISOString()): boolean {
+    return this.db.prepare(`
+      UPDATE job_actions SET status = 'cancelled', cancelled_at = ?, updated_at = ?
+      WHERE job_id = ? AND action = 'retranscribe' AND status = 'queued'
+    `).run(now, now, jobId).changes === 1;
+  }
+
+  acknowledgeNotebookFailures(jobId: string, provider: string, now = new Date().toISOString()): number {
+    return this.db.prepare(`
+      UPDATE notebook_operations SET acknowledged_at = ?, updated_at = ?
+      WHERE job_id = ? AND provider = ? AND status = 'failed' AND acknowledged_at IS NULL
+    `).run(now, now, jobId, provider).changes;
+  }
+
+  resetNotebookPage(jobId: string, provider: string): boolean {
+    return this.db.transaction(() => {
+      const removed = this.db.prepare("DELETE FROM notebook_pages WHERE job_id = ? AND provider = ?").run(jobId, provider);
+      this.db.prepare("DELETE FROM notebook_operations WHERE job_id = ? AND provider = ?").run(jobId, provider);
+      if (removed.changes > 0) this.updateJob(jobId, { recording_metadata_checked_at: null });
+      return removed.changes > 0;
+    })();
   }
 
   notificationDeliveries(jobId: string): NotificationDeliveryRow[] {
@@ -502,7 +597,7 @@ export class StateStore {
         SELECT 'notion', operation.job_id, jobs.title, operation.last_error, operation.updated_at
         FROM notebook_operations operation
         LEFT JOIN jobs ON jobs.job_id = operation.job_id
-        WHERE operation.status = 'failed' AND operation.last_error IS NOT NULL
+        WHERE operation.status = 'failed' AND operation.last_error IS NOT NULL AND operation.acknowledged_at IS NULL
         UNION ALL
         SELECT 'mqtt', event.job_id, jobs.title, event.last_error, event.created_at
         FROM events event
@@ -521,6 +616,7 @@ export class StateStore {
     const notion = (this.db.prepare(`
       SELECT COUNT(*) AS count FROM notebook_operations operation
       WHERE operation.status = 'failed'
+        AND operation.acknowledged_at IS NULL
         AND operation.id IN (SELECT MAX(latest.id) FROM notebook_operations latest GROUP BY latest.job_id)
     `).get() as { count: number }).count;
     const mqtt = (this.db.prepare("SELECT COUNT(*) AS count FROM events WHERE published_at IS NULL AND last_error IS NOT NULL").get() as { count: number }).count;
@@ -558,7 +654,7 @@ export class StateStore {
     });
   }
 
-  startNewAttempt(jobId: string, now: string): JobRow {
+  startNewAttempt(jobId: string, now: string, summaryBaselineId: string | null = null): JobRow {
     this.db.prepare(`UPDATE jobs SET
       attempt = attempt + 1,
       sidecar_state = 'pending_transcription',
@@ -569,12 +665,13 @@ export class StateStore {
       summary_started_at = NULL,
       summary_deadline_at = NULL,
       summary_expected = NULL,
+      summary_baseline_id = ?,
       job_ready_at = NULL,
       job_ready_outcome = NULL,
       job_ready_suppressed = 0,
       last_error = NULL,
       updated_at = ?
-      WHERE job_id = ?`).run(now, jobId);
+      WHERE job_id = ?`).run(summaryBaselineId, now, jobId);
     const job = this.getJob(jobId)!;
     this.recordJobState(job, now);
     return job;

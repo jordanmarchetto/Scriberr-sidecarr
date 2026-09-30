@@ -27,7 +27,8 @@ class FakeScriberrApi extends ScriberrApi {
     config: Config,
     private readonly settings: ScriberrSummarySettings | Error,
     private readonly summaryRequest: () => Promise<void> = async () => undefined,
-    private readonly summaryContent: string | null = null
+    private readonly summaryContent: string | null = null,
+    private readonly summaryId?: string
   ) {
     super(config);
   }
@@ -36,8 +37,8 @@ class FakeScriberrApi extends ScriberrApi {
     return job;
   }
 
-  override async getSummary(): Promise<{ content: string | null }> {
-    return { content: this.summaryContent };
+  override async getSummary(): Promise<{ id?: string; content: string | null }> {
+    return { id: this.summaryId, content: this.summaryContent };
   }
 
   override async getAudioMetadata(): Promise<{ sizeBytes: number }> {
@@ -65,7 +66,8 @@ type Scenario = {
 function scenario(
   settings: ScriberrSummarySettings | Error,
   summaryRequest?: () => Promise<void>,
-  summaryContent?: string
+  summaryContent?: string,
+  summaryId?: string
 ): Scenario {
   const directory = mkdtempSync(path.join(tmpdir(), "scriberr-sidecarr-auto-summary-"));
   const config = loadConfig({
@@ -78,7 +80,7 @@ function scenario(
   });
   const db = new StateStore(path.join(directory, "state.db"));
   db.discover(jobId, "", new Date().toISOString(), "webhook");
-  const api = new FakeScriberrApi(config, settings, summaryRequest, summaryContent);
+  const api = new FakeScriberrApi(config, settings, summaryRequest, summaryContent, summaryId);
   const mqtt = { flush: async () => undefined } as unknown as MqttPublisher;
   const service = new SidecarService(config, db, api, mqtt, pino({ level: "silent" }));
   return { api, db, directory, service };
@@ -141,6 +143,20 @@ test("discovers a completed summary through API polling without a webhook", asyn
 
     assert.equal(value.db.getJob(jobId)?.sidecar_state, "job_ready");
     assert.ok(value.db.pendingEvents().some((event) => event.event_type === "summary_complete"));
+  } finally {
+    cleanup(value);
+  }
+});
+
+test("does not reuse the prior attempt's summary after re-transcription", async () => {
+  const value = scenario({ auto_summarize: false }, undefined, "Old summary", "summary-attempt-1");
+  try {
+    value.db.updateJob(jobId, { summary_baseline_id: "summary-attempt-1" });
+    await value.service.runCycle();
+
+    assert.equal(value.api.summaryRequests, 1);
+    assert.equal(value.db.getJob(jobId)?.sidecar_state, "summary_processing");
+    assert.equal(value.db.getJob(jobId)?.summary_baseline_id, "summary-attempt-1");
   } finally {
     cleanup(value);
   }
