@@ -7,6 +7,7 @@ import test from "node:test";
 import pino from "pino";
 import { loadConfig, type Config } from "../src/config.ts";
 import { StateStore, type PendingEvent } from "../src/db.ts";
+import type { JobTitleGenerator } from "../src/job-title.ts";
 import type { MqttPublisher } from "../src/mqtt-publisher.ts";
 import { ScriberrApi } from "../src/scriberr-api.ts";
 import { SidecarService } from "../src/service.ts";
@@ -48,6 +49,12 @@ class RecordingPublisher {
   }
 }
 
+class FixedTitleGenerator implements JobTitleGenerator {
+  async generate(): Promise<string> {
+    return "9/12/2026 - ENT Appointment";
+  }
+}
+
 async function waitFor(predicate: () => boolean): Promise<void> {
   const deadline = Date.now() + 1000;
   while (!predicate()) {
@@ -72,7 +79,12 @@ test("webhook signal is API-confirmed and published once through the MQTT bounda
     db,
     new CompletedJobApi(config),
     publisher as unknown as MqttPublisher,
-    pino({ level: "silent" })
+    pino({ level: "silent" }),
+    undefined,
+    undefined,
+    undefined,
+    undefined,
+    new FixedTitleGenerator()
   );
   const receiver = new WebhookReceiver(config, db, () => service.runCycle(), pino({ level: "silent" }));
 
@@ -100,6 +112,9 @@ test("webhook signal is API-confirmed and published once through the MQTT bounda
       publisher.published.map((event) => event.event_type),
       ["job_found", "transcription_complete", "summary_complete", "job_ready"]
     );
+    assert.equal(db.getJob(jobId)?.display_title, "9/12/2026 - ENT Appointment");
+    const ready = publisher.published.find((event) => event.event_type === "job_ready");
+    assert.equal(JSON.parse(ready!.payload_json).title, "9/12/2026 - ENT Appointment");
 
     const duplicate = await fetch(url, { method: "POST", headers, body });
     assert.equal(duplicate.status, 202);

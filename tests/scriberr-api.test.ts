@@ -199,3 +199,55 @@ test("rate limits repeated connection retry warnings while preserving failures",
   const retryLogs = captured.records.filter((record) => record.msg === "Scriberr API request failed; retrying");
   assert.equal(retryLogs.length, 1);
 });
+
+test("generates a title through a temporary Scriberr chat session and deletes it", async () => {
+  const requests: Array<{ method: string; url: string; body: string }> = [];
+  const server = createServer(async (request, response) => {
+    const body = await new Promise<string>((resolve) => {
+      let value = "";
+      request.setEncoding("utf8");
+      request.on("data", (chunk) => { value += chunk; });
+      request.on("end", () => resolve(value));
+    });
+    requests.push({ method: request.method ?? "GET", url: request.url ?? "", body });
+    if (request.url === "/api/v1/summaries/settings") {
+      response.writeHead(200, { "Content-Type": "application/json" });
+      response.end(JSON.stringify({ default_model: "title-model" }));
+    } else if (request.url === "/api/v1/chat/sessions" && request.method === "POST") {
+      response.writeHead(201, { "Content-Type": "application/json" });
+      response.end(JSON.stringify({ id: "temporary-session" }));
+    } else if (request.url?.endsWith("/messages")) {
+      response.writeHead(200, { "Content-Type": "text/plain" });
+      response.end("ENT Appointment");
+    } else if (request.url === "/api/v1/chat/sessions/temporary-session" && request.method === "DELETE") {
+      response.writeHead(204);
+      response.end();
+    } else {
+      response.writeHead(404);
+      response.end();
+    }
+  });
+
+  try {
+    const url = await listen(server);
+    const api = new ScriberrApi(loadConfig({
+      SIDECARR_SCRIBERR_URL: url,
+      SIDECARR_SCRIBERR_API_KEY: "api-key"
+    }));
+
+    assert.equal(await api.generateTitleSubject("job-1"), "ENT Appointment");
+    assert.deepEqual(requests.map(({ method, url: requestUrl }) => `${method} ${requestUrl}`), [
+      "GET /api/v1/summaries/settings",
+      "POST /api/v1/chat/sessions",
+      "POST /api/v1/chat/sessions/temporary-session/messages",
+      "DELETE /api/v1/chat/sessions/temporary-session"
+    ]);
+    assert.deepEqual(JSON.parse(requests[1]!.body), {
+      transcription_id: "job-1",
+      model: "title-model",
+      title: "Sidecarr temporary title generation"
+    });
+  } finally {
+    await close(server);
+  }
+});

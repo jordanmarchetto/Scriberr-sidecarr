@@ -803,6 +803,7 @@ export class NotionPublisher implements NotebookPublisher {
   }
 
   private title(job: ScriberrJob, row: JobRow): string {
+    if (row.display_title) return row.display_title;
     const title = job.title?.trim();
     if (title) return title;
     const timestamp = job.created_at ?? row.first_seen_at;

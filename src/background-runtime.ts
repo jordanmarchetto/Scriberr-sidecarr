@@ -4,6 +4,7 @@ import { StateStore } from "./db.js";
 import { sanitizeError } from "./errors.js";
 import { ScriberrJobReconciler } from "./job-reconciliation.js";
 import { JobActionService } from "./job-action-service.js";
+import { ScriberrJobTitleGenerator } from "./job-title.js";
 import { Metrics } from "./metrics.js";
 import { MqttPublisher } from "./mqtt-publisher.js";
 import { NotebookService } from "./notebook-service.js";
@@ -77,7 +78,8 @@ export class BackgroundRuntime {
       metrics,
       notebook,
       this.notifications,
-      reconciliation
+      reconciliation,
+      new ScriberrJobTitleGenerator(api)
     );
   }
 

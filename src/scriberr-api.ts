@@ -163,6 +163,49 @@ export class ScriberrApi {
     }
   }
 
+  async generateTitleSubject(jobId: string): Promise<string> {
+    const configuredModel = this.config.summaryModel?.trim();
+    const model = configuredModel || await this.getSummaryModel();
+    if (!model) throw new Error("Scriberr has no configured model for title generation");
+
+    const timeoutMs = Math.min(this.config.summaryTimeoutMs, 5 * 60 * 1000);
+    const session = await this.requestOnce<{ id: string }>("/api/v1/chat/sessions", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        transcription_id: jobId,
+        model,
+        title: "Sidecarr temporary title generation"
+      })
+    }, timeoutMs);
+
+    try {
+      const response = await this.fetch(`/api/v1/chat/sessions/${encodeURIComponent(session.id)}/messages`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          content: "Create a specific 2-5 word title for this recording. Return only the title, with no date, quotation marks, or ending punctuation. Prefer a recognizable event such as ENT Appointment, Project Planning, or Family Catch-Up; never use generic words like Recording, Transcript, Conversation, or Summary."
+        })
+      }, timeoutMs);
+      if (!response.ok) {
+        this.metrics.incrementApiFailure();
+        await this.throwResponse(response);
+      }
+      return await response.text();
+    } finally {
+      const response = await this.fetch(`/api/v1/chat/sessions/${encodeURIComponent(session.id)}`, {
+        method: "DELETE"
+      }, this.config.apiTimeoutMs).catch((error: unknown) => {
+        this.logger?.warn({ jobId, sessionId: session.id, error: sanitizeError(error) }, "temporary Scriberr title session cleanup failed");
+        return undefined;
+      });
+      if (response && !response.ok && response.status !== 404) {
+        this.logger?.warn({ jobId, sessionId: session.id, status: response.status }, "temporary Scriberr title session cleanup failed");
+        await response.body?.cancel();
+      }
+    }
+  }
+
   private async getSummaryTemplate(): Promise<ScriberrSummaryTemplate | undefined> {
     const templateName = this.config.summaryTemplate?.trim();
     if (!templateName) return undefined;

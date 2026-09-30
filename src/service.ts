@@ -10,6 +10,7 @@ import type { JobReconciliation } from "./job-reconciliation.js";
 import { NotebookService } from "./notebook-service.js";
 import { NotificationService, type JobReadyOutcome, type JobReadyPayload } from "./notification-service.js";
 import { ScriberrApi, ScriberrApiError } from "./scriberr-api.js";
+import type { JobTitleGenerator } from "./job-title.js";
 import type { JobRow, ScriberrJob, ScriberrSummarySettings, SidecarState, WebhookSignalRow } from "./types.js";
 
 const jobIdPattern = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
@@ -33,7 +34,8 @@ export class SidecarService {
     private readonly metrics = new Metrics(),
     private readonly notebook?: NotebookService,
     private readonly notifications?: NotificationService,
-    private readonly jobReconciliation?: JobReconciliation
+    private readonly jobReconciliation?: JobReconciliation,
+    private readonly jobTitleGenerator?: JobTitleGenerator
   ) {}
 
   setFilesystemDiscoveryEnabled(enabled: boolean): void {
@@ -219,6 +221,9 @@ export class SidecarService {
       current = this.db.getJob(row.job_id)!;
     }
 
+    await this.captureDisplayTitle(job, current);
+    current = this.db.getJob(row.job_id)!;
+
     let summaryContent = current.summary_baseline_id ? "" : job.summary?.trim() ?? "";
     if (!summaryContent || current.summary_baseline_id) {
       try {
@@ -296,6 +301,18 @@ export class SidecarService {
     this.startSummaryRequest(current, job);
   }
 
+  private async captureDisplayTitle(job: ScriberrJob, row: JobRow): Promise<void> {
+    if (!this.jobTitleGenerator || row.display_title_attempt === row.attempt) return;
+    try {
+      const displayTitle = await this.jobTitleGenerator.generate(job, row.first_seen_at);
+      this.db.updateJob(row.job_id, { display_title: displayTitle, display_title_attempt: row.attempt });
+      this.logger.info({ jobId: job.id }, "job display title generated");
+    } catch (error) {
+      this.db.updateJob(row.job_id, { display_title_attempt: row.attempt });
+      this.logger.warn({ jobId: job.id, error: this.safeError(error) }, "job display title generation failed; using source title");
+    }
+  }
+
 
   private startSummaryRequest(row: JobRow, job: ScriberrJob): void {
     if (this.activeSummaryRequests.has(job.id)) return;
@@ -359,7 +376,7 @@ export class SidecarService {
     const inserted = Boolean(this.config.mqttUrl) && this.db.ensureEvent(row, eventType, {
       event: eventType,
       job_id: row.job_id,
-      title: title ?? null,
+      title: row.display_title ?? title ?? null,
       status,
       source: row.source,
       attempt: row.attempt,
@@ -388,7 +405,10 @@ export class SidecarService {
     if (hasNewSignal) return true;
     if (this.notebook?.needsReconciliation(job.job_id)) return true;
     if (job.scriberr_status === "not_found") return false;
-    if (terminalStates.has(job.sidecar_state)) return job.recording_metadata_checked_at === null;
+    if (terminalStates.has(job.sidecar_state)) {
+      return job.recording_metadata_checked_at === null
+        || (Boolean(this.jobTitleGenerator) && job.display_title_attempt !== job.attempt);
+    }
     if (job.last_error && elapsed < failedPollBackoffMs) return false;
     return true;
   }
@@ -444,7 +464,7 @@ export class SidecarService {
     const payload: JobReadyPayload = {
       event: "job_ready",
       job_id: row.job_id,
-      title: job.title?.trim() || `Scriberr recording ${row.job_id}`,
+      title: row.display_title ?? (job.title?.trim() || `Scriberr recording ${row.job_id}`),
       outcome,
       attempt: row.attempt,
       notion_url: notebookReadiness?.pageUrl ?? null,
