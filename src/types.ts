@@ -12,6 +12,7 @@ export type ScriberrJob = {
   audio_path?: string | null;
   merged_audio_path?: string | null;
   is_multi_track?: boolean;
+  parameters?: Record<string, unknown>;
 };
 
 export type ScriberrAudioMetadata = {
@@ -29,8 +30,10 @@ export type ScriberrJobListResponse = {
 };
 
 export type ScriberrSummary = {
+  id?: string;
   transcription_id?: string;
   content?: string | null;
+  created_at?: string;
 };
 
 export type SidecarState =
@@ -63,6 +66,7 @@ export type JobRow = {
   summary_started_at: string | null;
   summary_deadline_at: string | null;
   summary_expected: number | null;
+  summary_baseline_id: string | null;
   job_ready_at: string | null;
   job_ready_outcome: "ready" | "ready_with_warnings" | null;
   job_ready_suppressed: number;
@@ -73,6 +77,20 @@ export type JobRow = {
   last_error: string | null;
   created_at: string;
   updated_at: string;
+};
+
+export type JobActionStatus = "queued" | "starting" | "started" | "cancelled" | "failed";
+
+export type JobActionRow = {
+  id: number;
+  job_id: string;
+  action: "retranscribe";
+  status: JobActionStatus;
+  requested_at: string;
+  updated_at: string;
+  started_at: string | null;
+  cancelled_at: string | null;
+  error: string | null;
 };
 
 export type JobStateHistoryRow = {

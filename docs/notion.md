@@ -20,6 +20,8 @@ The token and parent page are both required when Notion is enabled.
 
 Sidecarr progressively adds status, metadata, editable classification fields, audio, a user-owned Notes area, summary, transcript, and archived rerun attempts. It only replaces blocks it owns, so user-written content is preserved.
 
+The appointment page and Full Transcript subpage include **Re-transcribe in Sidecarr** links. They open the authenticated Sidecarr job page with a confirmation dialog; simply opening the link never starts work.
+
 Audio is downloaded through Scriberr's authenticated API. No uploads-directory mount is needed. Notion simple uploads are limited to 20 MiB; if a recording is too large or its format is rejected, the page explains the omission and links to Scriberr. Transcript and summary updates still continue.
 
 Existing tracked jobs are not imported when Notion is first enabled. To import them intentionally, set:
@@ -30,4 +32,4 @@ SIDECARR_NOTION_BACKFILL=true
 
 If the parent page changes, Sidecarr moves only pages it created or recovered using its job marker.
 
-Notion operations retry up to three times. A terminal failure emits `notebook_sync_failed` without stopping discovery, summary coordination, or other destinations.
+Notion operations retry up to three times. A terminal failure emits `notebook_sync_failed` without stopping discovery, summary coordination, or other destinations. Job details can dismiss an intentional historical failure or recreate a managed page that was deleted or unshared.

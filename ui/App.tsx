@@ -78,9 +78,11 @@ type OperationOutcome = {
   createdAt?: string;
   completedAt?: string | null;
   deliveredAt?: string | null;
+  acknowledgedAt?: string | null;
 };
 type JobDetailsPayload = {
   job: JobSummary;
+  warnings: Array<{ code: string; title: string; message: string; actionRequired: boolean }>;
   likelyDuplicates: Array<{ id: string; title: string; status: string; firstSeenAt: string }>;
   links: { scriberr: string; notion: string | null };
   history: Array<{ attempt: number; state: string; scriberrStatus: string | null; error: string | null; occurredAt: string }>;
@@ -88,6 +90,14 @@ type JobDetailsPayload = {
     notion: null | { status: string; audioStatus: string; currentAttempt: number; updatedAt: string; operations: OperationOutcome[] };
     mqtt: OperationOutcome[];
     notifications: OperationOutcome[];
+  };
+  actions: {
+    retranscription: {
+      latest: null | { status: "queued" | "starting" | "started" | "cancelled" | "failed"; requested_at: string; started_at: string | null; error: string | null };
+      canRequest: boolean;
+      canCancel: boolean;
+    };
+    notion: { canDismiss: boolean; canRecreate: boolean };
   };
 };
 
@@ -410,6 +420,9 @@ function JobDetails({ token, jobId, back, openJob }: { token: string; jobId: str
   const [payload, setPayload] = useState<JobDetailsPayload | null>(null);
   const [error, setError] = useState("");
   const [refreshing, setRefreshing] = useState(false);
+  const [actionError, setActionError] = useState("");
+  const [actionRunning, setActionRunning] = useState("");
+  const [confirmRetranscription, setConfirmRetranscription] = useState(() => new URLSearchParams(window.location.search).get("retranscribe") === "true");
 
   const load = useCallback(async (quiet = false) => {
     if (!quiet) setRefreshing(true);
@@ -437,6 +450,37 @@ function JobDetails({ token, jobId, back, openJob }: { token: string; jobId: str
     };
   }, [load, payload?.job.active]);
 
+  useEffect(() => {
+    setConfirmRetranscription(new URLSearchParams(window.location.search).get("retranscribe") === "true");
+  }, [jobId]);
+
+  const mutate = async (action: "retranscribe" | "cancel-retranscribe" | "dismiss-notion" | "recreate-notion") => {
+    const routes = {
+      retranscribe: { path: "retranscribe", method: "POST" },
+      "cancel-retranscribe": { path: "retranscribe", method: "DELETE" },
+      "dismiss-notion": { path: "notion-warning", method: "DELETE" },
+      "recreate-notion": { path: "notion-page", method: "POST" }
+    } as const;
+    setActionRunning(action);
+    setActionError("");
+    try {
+      const target = routes[action];
+      const response = await fetch(`${basePath}/api/jobs/${encodeURIComponent(jobId)}/actions/${target.path}`, {
+        method: target.method,
+        headers: { Authorization: `Bearer ${token}`, "X-Sidecarr-Request": "1" }
+      });
+      const body = await response.json() as { error?: string };
+      if (!response.ok) throw new Error(body.error ?? `Action failed with HTTP ${response.status}`);
+      setConfirmRetranscription(false);
+      if (window.location.search) window.history.replaceState({}, "", window.location.pathname);
+      await load();
+    } catch (mutationError) {
+      setActionError(mutationError instanceof Error ? mutationError.message : "Unable to complete the action");
+    } finally {
+      setActionRunning("");
+    }
+  };
+
   if (!payload && !error) return <CenteredState title="Loading job" message="Reading Sidecarr's operational history…" />;
   if (!payload) return <section><button className="back-button" onClick={back}>← Jobs</button><article className="empty-state"><h2>Job unavailable</h2><p>{error}</p><button className="primary-button" onClick={() => void load()}>Try again</button></article></section>;
   const { job } = payload;
@@ -445,12 +489,22 @@ function JobDetails({ token, jobId, back, openJob }: { token: string; jobId: str
       <button className="back-button" onClick={back}>← Jobs</button>
       <div className="page-heading job-heading"><div><div className="eyebrow">Job details</div><h1>{job.title}</h1><p className="job-id">{job.id}</p></div><div className="heading-actions"><span className={`status-badge large ${statusTone(job.status)}`}>{job.status}</span><button className="secondary-button" disabled={refreshing} onClick={() => void load()}>{refreshing ? "Refreshing…" : "Refresh"}</button></div></div>
       {error && <div className="error-banner" role="alert">{error}</div>}
+      {actionError && <div className="error-banner" role="alert">{actionError}</div>}
       {job.error && <div className="error-banner"><strong>Latest error</strong><span>{job.error}</span></div>}
+      {payload.warnings.map((warning) => <aside className="warning-banner" key={warning.code}>
+        <div><strong>{warning.title}</strong><p>{warning.message}</p></div>
+        {!warning.actionRequired && <span className="status-badge success">No action required</span>}
+      </aside>)}
+      {payload.actions.retranscription.latest?.status === "queued" && <aside className="action-banner">
+        <div><strong>Re-transcription queued</strong><p>Sidecarr will start it after the current summary finishes.</p></div>
+        <button className="secondary-button" disabled={Boolean(actionRunning)} onClick={() => void mutate("cancel-retranscribe")}>{actionRunning === "cancel-retranscribe" ? "Cancelling…" : "Cancel queued re-transcription"}</button>
+      </aside>}
+      {payload.actions.retranscription.latest?.status === "failed" && <div className="error-banner"><strong>Re-transcription did not start</strong><span>{payload.actions.retranscription.latest.error}</span></div>}
       {payload.likelyDuplicates.length > 0 && <aside className="duplicate-banner">
         <div><strong>Likely duplicate recordings</strong><p>{payload.likelyDuplicates.length} other {payload.likelyDuplicates.length === 1 ? "job has" : "jobs have"} the same filename and arrived within one hour. Review them before removing anything in Scriberr.</p></div>
         <div className="duplicate-links">{payload.likelyDuplicates.map((candidate) => <button key={candidate.id} onClick={() => openJob(candidate.id)}><span>{formatTime(candidate.firstSeenAt)}</span><strong>{candidate.status}</strong><b aria-hidden="true">›</b></button>)}</div>
       </aside>}
-      <div className="detail-links"><a className="primary-button link-button" href={payload.links.scriberr}>Open in Scriberr ↗</a>{payload.links.notion && <a className="secondary-button link-button" href={payload.links.notion}>Open in Notion ↗</a>}</div>
+      <div className="detail-links"><a className="primary-button link-button" href={payload.links.scriberr}>Open in Scriberr ↗</a>{payload.links.notion && <a className="secondary-button link-button" href={payload.links.notion}>Open in Notion ↗</a>}<button className="secondary-button" disabled={!payload.actions.retranscription.canRequest || Boolean(actionRunning)} onClick={() => setConfirmRetranscription(true)}>Re-transcribe</button></div>
       <div className="detail-grid">
         <DetailValue label="Filename" value={job.recording.filename ?? "—"} />
         <DetailValue label="Duration" value={formatDuration(job.recording.durationSeconds)} />
@@ -475,6 +529,20 @@ function JobDetails({ token, jobId, back, openJob }: { token: string; jobId: str
         <DestinationCard title="MQTT" status={destinationStatus(payload.destinations.mqtt)} outcomes={payload.destinations.mqtt} />
         <DestinationCard title="Notifications" status={destinationStatus(payload.destinations.notifications)} outcomes={payload.destinations.notifications} />
       </div>
+      {(payload.actions.notion.canDismiss || payload.actions.notion.canRecreate) && <div className="notion-actions">
+        <strong>Resolve Notion warning</strong><p>Restore and re-share the existing page, dismiss this warning, or recreate the managed page.</p><div>
+          {payload.actions.notion.canDismiss && <button className="secondary-button" disabled={Boolean(actionRunning)} onClick={() => void mutate("dismiss-notion")}>Dismiss warning</button>}
+          {payload.actions.notion.canRecreate && <button className="primary-button" disabled={Boolean(actionRunning)} onClick={() => void mutate("recreate-notion")}>{actionRunning === "recreate-notion" ? "Recreating…" : "Recreate Notion page"}</button>}
+        </div>
+      </div>}
+      {confirmRetranscription && <div className="modal-backdrop" role="presentation" onMouseDown={(event) => { if (event.target === event.currentTarget) setConfirmRetranscription(false); }}>
+        <section className="confirmation-modal" role="dialog" aria-modal="true" aria-labelledby="retranscribe-title">
+          <div className="eyebrow">New processing attempt</div><h2 id="retranscribe-title">Re-transcribe this recording?</h2>
+          <p>Scriberr will reuse the previous transcription settings and replace its current transcript and summary. Sidecarr will preserve the previous generated content in Notion and keep your Notes.</p>
+          {job.state.includes("summary") && <p className="inline-note">The request will remain queued until the current summary finishes.</p>}
+          <div className="modal-actions"><button className="secondary-button" disabled={Boolean(actionRunning)} onClick={() => setConfirmRetranscription(false)}>Cancel</button><button className="primary-button" disabled={Boolean(actionRunning)} onClick={() => void mutate("retranscribe")}>{actionRunning === "retranscribe" ? "Requesting…" : "Re-transcribe"}</button></div>
+        </section>
+      </div>}
     </section>
   );
 }
@@ -501,7 +569,7 @@ function outcomeDetail(outcome: OperationOutcome): string {
     outcome.attempt ? `Job attempt ${outcome.attempt}` : undefined,
     outcome.attempts === 0 ? "No failed attempts" : `${outcome.attempts} failed ${outcome.attempts === 1 ? "attempt" : "attempts"}`,
     timestamp ? formatTime(timestamp) : undefined,
-    outcome.error ?? undefined
+    outcome.acknowledgedAt ? `Dismissed ${formatTime(outcome.acknowledgedAt)}` : outcome.error ?? undefined
   ].filter(Boolean).join(" · ");
 }
 

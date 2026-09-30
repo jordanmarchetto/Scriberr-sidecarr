@@ -72,7 +72,7 @@ export class NotionPublisher implements NotebookPublisher {
   ) {
     if (!config.notionParentPageUrl) throw new Error("Notion parent page URL is required");
     this.parentPageId = parseNotionPageId(config.notionParentPageUrl);
-    this.reconciliationKey = `layout:v4:${hash(`${config.scriberrPublicUrl}${config.uiBasePath}`)}`;
+    this.reconciliationKey = `layout:v5:${hash(`${config.scriberrPublicUrl}${config.uiBasePath}`)}`;
   }
 
   async sync(job: ScriberrJob, row: JobRow): Promise<NotebookOutcome[]> {
@@ -272,6 +272,7 @@ export class NotionPublisher implements NotebookPublisher {
       paragraph(this.statusText(job, row)),
       paragraph("Open in Scriberr", this.scriberrPageUrl(job.id)),
       paragraph("Manage in Sidecarr", this.sidecarrPageUrl(job.id)),
+      paragraph("Re-transcribe in Sidecarr", this.retranscribePageUrl(job.id)),
       toggle("Details", [
         table(this.metadataRows(job, row)),
         table(this.classificationRows())
@@ -282,19 +283,20 @@ export class NotionPublisher implements NotebookPublisher {
       toggle("Summary", [paragraph("Waiting for transcription…")])
     ]);
     const status = required(initial[0], "status block");
-    const details = required(initial[3], "details container");
+    const details = required(initial[4], "details container");
     const detailChildren = await this.notion.children(details.id);
     const metadata = required(detailChildren[0], "metadata table");
     const classification = required(detailChildren[1], "classification table");
-    const audio = required(initial[4], "audio container");
-    const summary = required(initial[7], "summary container");
+    const audio = required(initial[5], "audio container");
+    const summary = required(initial[8], "summary container");
     const classificationRows = await this.notion.children(classification.id);
     if (classificationRows.length < 4) throw new Error("Notion did not create the classification rows");
     const summaryChildren = await this.notion.children(summary.id);
 
     const transcript = await this.notion.createPage(pageId, "Full Transcript");
     const transcriptBlocks = await this.notion.appendChildren(transcript.id, [
-      paragraph("Transcription loading…")
+      paragraph("Transcription loading…"),
+      paragraph("Re-transcribe in Sidecarr", this.retranscribePageUrl(job.id))
     ]);
     const versions = required((await this.notion.appendChildren(pageId, [toggle("Previous Versions")]))[0], "versions container");
 
@@ -313,7 +315,7 @@ export class NotionPublisher implements NotebookPublisher {
       summaryContainerId: summary.id,
       summaryBlockIds: summaryChildren.map((item) => item.id),
       transcriptPageId: transcript.id,
-      transcriptBlockIds: transcriptBlocks.map((item) => item.id),
+      transcriptBlockIds: transcriptBlocks.slice(0, 1).map((item) => item.id),
       versionsContainerId: versions.id
     };
     const page: NotebookPageRow = {
@@ -451,7 +453,7 @@ export class NotionPublisher implements NotebookPublisher {
       summaryContainerId: summary.id,
       summaryBlockIds: summaryChildren.map((item) => item.id),
       transcriptPageId: transcript.id,
-      transcriptBlockIds: transcriptChildren.map((item) => item.id),
+      transcriptBlockIds: transcriptChildren.filter((item) => blockText(item) !== "Re-transcribe in Sidecarr").map((item) => item.id),
       versionsContainerId: versions.id
     };
   }
@@ -482,13 +484,17 @@ export class NotionPublisher implements NotebookPublisher {
     let transcriptIds: string[];
     if (transcript) {
       const children = await this.notion.children(transcript.id);
-      transcriptIds = children.filter((item) => !blockText(item).startsWith("Sidecarr Transcript for Job ID:")).map((item) => item.id);
+      transcriptIds = children.filter((item) => {
+        const text = blockText(item);
+        return !text.startsWith("Sidecarr Transcript for Job ID:") && text !== "Re-transcribe in Sidecarr";
+      }).map((item) => item.id);
     } else {
       transcript = await this.notion.createPage(page.page_id, "Full Transcript");
       const transcriptBlocks = await this.notion.appendChildren(transcript.id, [
-        paragraph("Transcription loading…")
+        paragraph("Transcription loading…"),
+        paragraph("Re-transcribe in Sidecarr", this.retranscribePageUrl(row.job_id))
       ]);
-      transcriptIds = transcriptBlocks.map((item) => item.id);
+      transcriptIds = transcriptBlocks.slice(0, 1).map((item) => item.id);
     }
     const currentSummary = await this.notion.children(page.summary_container_id);
     const summaryIds = currentSummary.length === 1 && blockText(currentSummary[0]) === "Waiting for transcription…"
@@ -513,6 +519,7 @@ export class NotionPublisher implements NotebookPublisher {
     const blocks = await this.notion.children(page.page_id);
     let link = blocks.find((block) => blockText(block) === "Open in Scriberr");
     let manageLink = blocks.find((block) => blockText(block) === "Manage in Sidecarr");
+    let retranscribeLink = blocks.find((block) => blockText(block) === "Re-transcribe in Sidecarr");
     let details = blocks.find((block) => blockText(block) === "Details");
 
     if (!link) {
@@ -533,6 +540,24 @@ export class NotionPublisher implements NotebookPublisher {
       ))[0], "Sidecarr link");
     } else if (blockLink(manageLink) !== this.sidecarrPageUrl(job.id)) {
       await this.notion.updateBlock(manageLink.id, paragraphBody("Manage in Sidecarr", this.sidecarrPageUrl(job.id)));
+    }
+
+    if (!retranscribeLink) {
+      retranscribeLink = required((await this.notion.appendChildren(
+        page.page_id,
+        [paragraph("Re-transcribe in Sidecarr", this.retranscribePageUrl(job.id))],
+        manageLink.id
+      ))[0], "re-transcription link");
+    } else if (blockLink(retranscribeLink) !== this.retranscribePageUrl(job.id)) {
+      await this.notion.updateBlock(retranscribeLink.id, paragraphBody("Re-transcribe in Sidecarr", this.retranscribePageUrl(job.id)));
+    }
+
+    const transcriptChildren = await this.notion.children(page.transcript_page_id);
+    const transcriptAction = transcriptChildren.find((block) => blockText(block) === "Re-transcribe in Sidecarr");
+    if (!transcriptAction) {
+      await this.notion.appendChildren(page.transcript_page_id, [paragraph("Re-transcribe in Sidecarr", this.retranscribePageUrl(job.id))]);
+    } else if (blockLink(transcriptAction) !== this.retranscribePageUrl(job.id)) {
+      await this.notion.updateBlock(transcriptAction.id, paragraphBody("Re-transcribe in Sidecarr", this.retranscribePageUrl(job.id)));
     }
 
     if (!details) {
@@ -795,6 +820,10 @@ export class NotionPublisher implements NotebookPublisher {
 
   private sidecarrPageUrl(jobId: string): string {
     return `${this.config.scriberrPublicUrl}${this.config.uiBasePath}/jobs/${encodeURIComponent(jobId)}`;
+  }
+
+  private retranscribePageUrl(jobId: string): string {
+    return `${this.sidecarrPageUrl(jobId)}?retranscribe=true`;
   }
 
   private metadataRows(job: ScriberrJob, row: JobRow): string[][] {

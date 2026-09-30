@@ -3,6 +3,7 @@ import type { Config } from "./config.js";
 import { StateStore } from "./db.js";
 import { sanitizeError } from "./errors.js";
 import { ScriberrJobReconciler } from "./job-reconciliation.js";
+import { JobActionService } from "./job-action-service.js";
 import { Metrics } from "./metrics.js";
 import { MqttPublisher } from "./mqtt-publisher.js";
 import { NotebookService } from "./notebook-service.js";
@@ -20,6 +21,7 @@ export class BackgroundRuntime {
   private readonly mqtt: MqttPublisher;
   private readonly notifications: NotificationService;
   private readonly service: SidecarService;
+  readonly actions: JobActionService;
   private closed = false;
 
   constructor(
@@ -29,6 +31,7 @@ export class BackgroundRuntime {
     metrics: Metrics
   ) {
     const api = new ScriberrApi(config, metrics, logger);
+    this.actions = new JobActionService(db, api, logger);
     this.readiness = new ScriberrReadinessGate(api, logger);
     this.registration = new WebhookRegistration(config, db, api, logger);
     const runtimeConfig = { ...config, webhookSecret: this.registration.secret };
@@ -92,6 +95,7 @@ export class BackgroundRuntime {
       const webhookActive = await this.registration.reconcile();
       this.service.setFilesystemDiscoveryEnabled(!webhookActive);
       await this.service.runCycle();
+      if (await this.actions.processQueued()) await this.service.runCycle();
     });
   }
 

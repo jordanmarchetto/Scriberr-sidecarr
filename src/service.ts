@@ -219,18 +219,19 @@ export class SidecarService {
       current = this.db.getJob(row.job_id)!;
     }
 
-    let summaryContent = job.summary?.trim() ?? "";
-    if (!summaryContent) {
+    let summaryContent = current.summary_baseline_id ? "" : job.summary?.trim() ?? "";
+    if (!summaryContent || current.summary_baseline_id) {
       try {
         const summary = await this.api.getSummary(job.id);
-        summaryContent = summary.content?.trim() || "";
+        const isPreviousAttempt = current.summary_baseline_id && (!summary.id || summary.id === current.summary_baseline_id);
+        summaryContent = isPreviousAttempt ? "" : summary.content?.trim() || "";
       } catch (error) {
         this.logger.debug({ jobId: job.id, error: this.safeError(error) }, "summary lookup failed");
       }
     }
 
     if (summaryContent) {
-      this.db.updateJob(row.job_id, { summary_expected: 1 });
+      this.db.updateJob(row.job_id, { summary_expected: 1, summary_baseline_id: null });
       // A terminal job may be polled once to backfill recording metadata. Keep its
       // ready state even when the notebook can no longer be synchronized.
       if (current.sidecar_state !== "job_ready") {

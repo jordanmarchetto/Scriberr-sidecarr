@@ -53,6 +53,14 @@ export class ScriberrApi {
     return this.request<ScriberrSummary>(`/api/v1/transcription/${encodeURIComponent(jobId)}/summary`);
   }
 
+  async startTranscription(jobId: string, parameters: Record<string, unknown>): Promise<ScriberrJob> {
+    return this.requestOnce<ScriberrJob>(`/api/v1/transcription/${encodeURIComponent(jobId)}/start`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(parameters)
+    }, this.config.apiTimeoutMs);
+  }
+
   async getSummarySettings(): Promise<ScriberrSummarySettings> {
     return this.request<ScriberrSummarySettings>("/api/v1/summaries/settings");
   }

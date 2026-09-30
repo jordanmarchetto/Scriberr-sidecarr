@@ -267,9 +267,12 @@ test("creates and progressively updates a page without touching user Notes", asy
     const topLevel = await value.notion.children(page.page_id);
     assert.match(JSON.stringify(topLevel), new RegExp(`/sidecarr/jobs/${jobId}`));
     const openInScriberr = topLevel.find((block) => blockText(block) === "Open in Scriberr");
+    const retranscribe = topLevel.find((block) => blockText(block) === "Re-transcribe in Sidecarr");
     const details = topLevel.find((block) => blockText(block) === "Details");
     assert.ok(openInScriberr);
     assert.match(JSON.stringify(openInScriberr), new RegExp(`http://scriberr.example.test/audio/${jobId}`));
+    assert.ok(retranscribe);
+    assert.match(JSON.stringify(retranscribe), new RegExp(`/sidecarr/jobs/${jobId}\\?retranscribe=true`));
     assert.ok(details);
     assert.equal(topLevel.filter((block) => block.type === "table").length, 0);
     assert.equal(topLevel.some((block) => blockText(block).startsWith("Sidecarr Job ID:")), false);
@@ -310,6 +313,7 @@ test("creates and progressively updates a page without touching user Notes", asy
     assert.equal((await value.notion.children(page.page_id)).filter((block) => blockText(block) === "Manage in Sidecarr").length, 1);
 
     const transcriptBlocks = await value.notion.children(page.transcript_page_id);
+    assert.equal(transcriptBlocks.filter((block) => blockText(block) === "Re-transcribe in Sidecarr").length, 1);
     assert.ok(transcriptBlocks.some((block) => blockText(block).includes("Speaker 1")));
     assert.equal(transcriptBlocks.some((block) => blockText(block).startsWith("Sidecarr Transcript for Job ID:")), false);
     const rawTranscript = transcriptBlocks.find((block) => blockText(block) === "Raw transcript data");

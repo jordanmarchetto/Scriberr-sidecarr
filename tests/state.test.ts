@@ -127,3 +127,23 @@ test("likely duplicate jobs share a normalized title within one hour", () => {
     rmSync(directory, { recursive: true, force: true });
   }
 });
+
+test("dismissed Notion failures no longer degrade overview health", () => {
+  const directory = mkdtempSync(path.join(tmpdir(), "scriberr-sidecarr-notion-dismiss-"));
+  const db = new StateStore(path.join(directory, "state.db"));
+  try {
+    db.discover("notion-job", "", "2026-09-30T12:00:00Z", "webhook", "Appointment.mp3");
+    const operation = db.beginNotebookOperation("notion-job", "notion", "page:access:1:completed", "validate_page");
+    db.recordNotebookOperationFailure(operation.id, "Notion page is missing", true);
+    assert.equal(db.destinationFailureCounts().notion, 1);
+    assert.equal(db.recentOperationalFailures().length, 1);
+
+    assert.equal(db.acknowledgeNotebookFailures("notion-job", "notion"), 1);
+    assert.equal(db.destinationFailureCounts().notion, 0);
+    assert.equal(db.recentOperationalFailures().length, 0);
+    assert.ok(db.notebookOperations("notion-job")[0]?.acknowledged_at);
+  } finally {
+    db.close();
+    rmSync(directory, { recursive: true, force: true });
+  }
+});
