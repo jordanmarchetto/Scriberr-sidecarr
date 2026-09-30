@@ -529,7 +529,7 @@ export class UiServer {
   private safeJob(job: JobRow, likelyDuplicateCount = 0): object {
     return {
       id: job.job_id,
-      title: job.title ?? `Scriberr job ${job.job_id}`,
+      title: job.display_title ?? job.title ?? `Scriberr job ${job.job_id}`,
       source: job.source,
       state: job.sidecar_state,
       scriberrStatus: job.scriberr_status,

@@ -289,7 +289,12 @@ test("creates and progressively updates a page without touching user Notes", asy
       paragraph: { rich_text: [{ type: "text", text: { content: "Remember this" } }] }
     }]))[0];
 
-    value.db.updateJob(jobId, { sidecar_state: "transcription_complete", scriberr_status: "completed" });
+    value.db.updateJob(jobId, {
+      sidecar_state: "transcription_complete",
+      scriberr_status: "completed",
+      display_title: "9/12/2026 - Therapy Appointment",
+      display_title_attempt: 1
+    });
     value.api.summaryContent = "**Overview**\n\n- **Decision:** useful item\n+ Follow up";
     const completedRow = value.db.getJob(jobId)!;
     const completed = await publisher.sync({
@@ -307,6 +312,7 @@ test("creates and progressively updates a page without touching user Notes", asy
     }, completedRow);
     assert.ok(completed.some((item) => item.event === "notebook_transcript_updated"));
     assert.ok(completed.some((item) => item.event === "notebook_summary_updated"));
+    assert.equal(value.notion.pages.get(page.page_id)?.title, "9/12/2026 - Therapy Appointment");
     assert.equal(value.api.summaryLookups, 0);
     assert.equal(value.notion.findBlockForTest(userNote.id)?.in_trash, undefined);
     assert.doesNotMatch(JSON.stringify([...first, ...completed]), /hello|useful item|notion-secret/);

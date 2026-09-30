@@ -20,6 +20,8 @@ The token and parent page are both required when Notion is enabled.
 
 Sidecarr progressively adds status, metadata, editable classification fields, audio, a user-owned Notes area, summary, transcript, and archived rerun attempts. It only replaces blocks it owns, so user-written content is preserved.
 
+After transcription completes, Sidecarr asks Scriberr's configured model for a short subject and uses a dated display title such as `9/29/2026 - ENT Appointment` in Sidecarr, Notion, and readiness notifications. The temporary Scriberr chat session is deleted immediately, the original Scriberr title remains unchanged as filename metadata, and title-generation failures fall back to that original title without blocking the job.
+
 The appointment page and Full Transcript subpage include **Re-transcribe in Sidecarr** links. They open the authenticated Sidecarr job page with a confirmation dialog; simply opening the link never starts work.
 
 Audio is downloaded through Scriberr's authenticated API. No uploads-directory mount is needed. Notion simple uploads are limited to 20 MiB; if a recording is too large or its format is rejected, the page explains the omission and links to Scriberr. Transcript and summary updates still continue.

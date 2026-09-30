@@ -101,6 +101,8 @@ export class StateStore {
       CREATE TABLE IF NOT EXISTS jobs (
         job_id TEXT PRIMARY KEY,
         title TEXT,
+        display_title TEXT,
+        display_title_attempt INTEGER,
         source TEXT NOT NULL,
         transcript_folder TEXT NOT NULL,
         first_seen_at TEXT NOT NULL,
@@ -274,6 +276,12 @@ export class StateStore {
     const jobColumns = this.db.prepare("PRAGMA table_info(jobs)").all() as Array<{ name: string }>;
     if (!jobColumns.some((column) => column.name === "title")) {
       this.db.exec("ALTER TABLE jobs ADD COLUMN title TEXT");
+    }
+    if (!jobColumns.some((column) => column.name === "display_title")) {
+      this.db.exec("ALTER TABLE jobs ADD COLUMN display_title TEXT");
+    }
+    if (!jobColumns.some((column) => column.name === "display_title_attempt")) {
+      this.db.exec("ALTER TABLE jobs ADD COLUMN display_title_attempt INTEGER");
     }
     if (!jobColumns.some((column) => column.name === "summary_expected")) {
       this.db.exec("ALTER TABLE jobs ADD COLUMN summary_expected INTEGER");
@@ -591,20 +599,20 @@ export class StateStore {
   recentOperationalFailures(limit = 8): OperationalFailure[] {
     return this.db.prepare(`
       SELECT category, job_id, title, message, occurred_at FROM (
-        SELECT 'job' AS category, job_id, title, last_error AS message, updated_at AS occurred_at
+        SELECT 'job' AS category, job_id, COALESCE(display_title, title) AS title, last_error AS message, updated_at AS occurred_at
         FROM jobs WHERE last_error IS NOT NULL
         UNION ALL
-        SELECT 'notion', operation.job_id, jobs.title, operation.last_error, operation.updated_at
+        SELECT 'notion', operation.job_id, COALESCE(jobs.display_title, jobs.title), operation.last_error, operation.updated_at
         FROM notebook_operations operation
         LEFT JOIN jobs ON jobs.job_id = operation.job_id
         WHERE operation.status = 'failed' AND operation.last_error IS NOT NULL AND operation.acknowledged_at IS NULL
         UNION ALL
-        SELECT 'mqtt', event.job_id, jobs.title, event.last_error, event.created_at
+        SELECT 'mqtt', event.job_id, COALESCE(jobs.display_title, jobs.title), event.last_error, event.created_at
         FROM events event
         LEFT JOIN jobs ON jobs.job_id = event.job_id
         WHERE event.published_at IS NULL AND event.last_error IS NOT NULL
         UNION ALL
-        SELECT 'notification', delivery.job_id, jobs.title, delivery.last_error, delivery.updated_at
+        SELECT 'notification', delivery.job_id, COALESCE(jobs.display_title, jobs.title), delivery.last_error, delivery.updated_at
         FROM notification_deliveries delivery
         LEFT JOIN jobs ON jobs.job_id = delivery.job_id
         WHERE delivery.delivered_at IS NULL AND delivery.attempts >= 3 AND delivery.last_error IS NOT NULL

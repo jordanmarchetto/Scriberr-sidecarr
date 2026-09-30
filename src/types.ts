@@ -52,6 +52,8 @@ export type SidecarState =
 export type JobRow = {
   job_id: string;
   title: string | null;
+  display_title: string | null;
+  display_title_attempt: number | null;
   source: string;
   transcript_folder: string;
   first_seen_at: string;
