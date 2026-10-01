@@ -8,6 +8,8 @@ The Overview page reports the current Scriberr connection, effective discovery m
 
 Job details can re-transcribe a completed or failed Scriberr job with its previous settings. A request made while summary generation is active is queued durably and can be cancelled before it starts; only one transcription attempt runs at a time. Each retry remains on the same stable job URL and creates a new Sidecarr attempt. Active job pages refresh slowly while the page is visible; background tabs do not poll.
 
+Jobs with the same filename—compared case-insensitively after trimming outer whitespace—discovered within one hour are shown as likely duplicates. This is advisory only: Sidecarr does not currently choose a canonical recording, archive pages, or delete Scriberr jobs.
+
 Warnings explain their cause and whether action is required. Missing or inaccessible managed Notion pages can be dismissed or recreated from job details. Other correction, resend, and reclassification actions remain future work.
 
 The operations APIs never return credentials, transcripts, summaries, notification payloads, MQTT payloads, or raw remote responses. The browser-facing Scriberr URL is also the origin used for Sidecarr job links; it may be a private LAN or VPN address and does not need to be internet-public.

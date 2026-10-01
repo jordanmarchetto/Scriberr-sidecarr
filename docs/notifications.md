@@ -51,7 +51,7 @@ Example body:
 {
   "event": "job_ready",
   "job_id": "123e4567-e89b-12d3-a456-426614174000",
-  "title": "Doctor appointment",
+  "title": "9/29/2026 - ENT Appointment",
   "outcome": "ready",
   "attempt": 1,
   "notion_url": "https://www.notion.so/example",

@@ -38,6 +38,13 @@ For an actively processing job, leave its detail page visible to receive a slow 
 
 Pushes to `main` publish `latest` and commit-SHA image tags. A tag such as `v0.2.0` publishes `0.2.0` and `0.2` images.
 
+After pulling a newer tag, recreate the container so Compose uses the new image ID; `docker compose restart` only restarts the existing container:
+
+```bash
+docker compose pull scriberr-sidecarr
+docker compose up -d --force-recreate scriberr-sidecarr
+```
+
 Pushes to `feature/**` publish a temporary branch image. Slashes become dashes; for example, `feature/job-ready-notifications` publishes:
 
 ```text
