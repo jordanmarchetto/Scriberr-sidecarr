@@ -1,6 +1,6 @@
 # Roadmap and Current Status
 
-> Last audited: 2026-10-01, through PR #16 (`90ee879`). This is the canonical source for shipped capabilities and planned work. “Shipped” means merged to `main` and published in its image; a particular Docker stack may still need to pull and recreate its container. Local phase documents under `scratch/` preserve design rationale and historical delivery plans.
+> Last audited: 2026-10-01, through PR #16 (`90ee879`). This is the canonical source for shipped capabilities and planned work. “Shipped” means merged to `main` and published in its image; a particular Docker stack may still need to pull and recreate its container. Local phase documents under `scratch/completed/` preserve design rationale and historical delivery plans.
 
 ## Shipped
 
@@ -25,6 +25,8 @@ Detection is shipped; cleanup is not. The next product slice should turn a warni
 4. Require confirmation before any destructive action.
 5. Keep a minimal audit record of the canonical job and superseded jobs.
 
+Incident that motivated this: one source file, `Standard recording 31.mp3`, produced four separate Scriberr jobs — 10:26 (1:21, 3.3 MB), 10:27 (2:31, 6.1 MB), 10:30 (5:04, 12.2 MB), and 10:45 (17:58, 43.1 MB) — progressively longer snapshots of one growing phone recording copied by Syncthing while it was still being written. Only the final 17:58 file remained in the watched directory, and Sidecarr discovered each already-created job by webhook without creating duplicates. This can legitimately happen, so Scriberr should keep transcribing every fresh upload; cleanup belongs in Sidecarr. Do not call this `Merge`: these are overlapping snapshots, not separate segments to concatenate.
+
 Before implementation, decide whether the first version permanently deletes superseded Scriberr jobs or marks them superseded and archives their Notion pages. Sidecarr must never delete candidates automatically.
 
 ## Later product work
@@ -35,12 +37,14 @@ Several intentional recordings from one appointment—such as separate conversat
 
 ### Classification and correction
 
+- Use the authenticated Sidecarr job page as the primary correction surface; managed Notion pages link to it.
 - Infer person, appointment type, and tags with confidence and human review.
-- Keep user-confirmed values authoritative.
+- Keep user-confirmed values authoritative; never silently overwrite them.
 - Preserve raw Scriberr output and represent corrections as versioned overlays.
 - Keep speaker mappings recording-specific.
 - Allow one active content revision per job initially and produce a new readiness transition when it settles.
-- Decide how direct Notion edits and summary regeneration participate before implementation.
+- Reuse Scriberr's supported contextual LLM APIs where practical; add a provider-independent Sidecarr AI boundary only if the required interactions exceed what Scriberr supports.
+- Decide the classification taxonomy, how direct Notion edits participate, and summary regeneration rules in a focused design checkpoint before implementation.
 
 ### Notifications and follow-up
 
@@ -63,8 +67,8 @@ Several intentional recordings from one appointment—such as separate conversat
 ## Documentation map
 
 - `docs/*.md` describes supported operation and configuration.
-- `scratch/phase-1-architecture.md` and `scratch/phase-2-architecture.md` preserve discovery and lifecycle design history.
-- `scratch/phase-3-*` records the implemented Notion design.
-- `scratch/phase-4-*` records the implemented readiness/notification design.
-- `scratch/phase-5-*` records the implemented UI design and its deferred correction model.
-- `scratch/post-mvp.md` contains the original duplicate-recording incident and now points planning back to this roadmap.
+- `scratch/completed/phase-1-architecture.md` and `scratch/completed/phase-2-architecture.md` preserve discovery and lifecycle design history.
+- `scratch/completed/phase-3-*` records the implemented Notion design.
+- `scratch/completed/phase-4-*` records the implemented readiness/notification design.
+- `scratch/completed/phase-5-*` records the implemented UI design and its deferred correction model.
+- `scratch/todos/` holds workable implementation todos; this roadmap is the canonical source for all planned work.
