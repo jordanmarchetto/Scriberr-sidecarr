@@ -6,7 +6,7 @@ The optional UI is served at `/sidecarr` by the same listener that receives Scri
 
 The Overview page reports the current Scriberr connection, effective discovery mode, configured destinations, and recent failures. The Jobs page shows the ten most recently discovered jobs at a time. Each job has a stable `/sidecarr/jobs/<scriberr-job-id>` route with its current state, attempt history, destination outcomes, notification delivery status, and sanitized errors.
 
-Job details can re-transcribe a completed or failed Scriberr job with its previous settings. A request made while summary generation is active is queued durably and can be cancelled before it starts; only one transcription attempt runs at a time. Each retry remains on the same stable job URL and creates a new Sidecarr attempt. Active job pages refresh slowly while the page is visible; background tabs do not poll.
+Job details can re-transcribe a completed or failed Scriberr job with its previous settings. When the latest attempt failed, the button appears as "Re-run this recording" so it reads as the recovery action for a job that never finished. A request made while summary generation is active is queued durably and can be cancelled before it starts; only one transcription attempt runs at a time. Each retry remains on the same stable job URL and creates a new Sidecarr attempt. Active job pages refresh slowly while the page is visible; background tabs do not poll.
 
 Jobs with the same filename—compared case-insensitively after trimming outer whitespace—discovered within one hour are shown as likely duplicates. This is advisory only: Sidecarr does not currently choose a canonical recording, archive pages, or delete Scriberr jobs.
 

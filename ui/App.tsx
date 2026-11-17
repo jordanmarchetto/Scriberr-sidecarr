@@ -484,6 +484,9 @@ function JobDetails({ token, jobId, back, openJob }: { token: string; jobId: str
   if (!payload && !error) return <CenteredState title="Loading job" message="Reading Sidecarr's operational history…" />;
   if (!payload) return <section><button className="back-button" onClick={back}>← Jobs</button><article className="empty-state"><h2>Job unavailable</h2><p>{error}</p><button className="primary-button" onClick={() => void load()}>Try again</button></article></section>;
   const { job } = payload;
+  // Present the re-transcription as a recovery action when the latest attempt failed.
+  const failedState = /failed/.test(job.state);
+  const retranscribeLabel = failedState ? "Re-run this recording" : "Re-transcribe";
   return (
     <section>
       <button className="back-button" onClick={back}>← Jobs</button>
@@ -504,7 +507,7 @@ function JobDetails({ token, jobId, back, openJob }: { token: string; jobId: str
         <div><strong>Likely duplicate recordings</strong><p>{payload.likelyDuplicates.length} other {payload.likelyDuplicates.length === 1 ? "job has" : "jobs have"} the same filename and arrived within one hour. Review them before removing anything in Scriberr.</p></div>
         <div className="duplicate-links">{payload.likelyDuplicates.map((candidate) => <button key={candidate.id} onClick={() => openJob(candidate.id)}><span>{formatTime(candidate.firstSeenAt)}</span><strong>{candidate.status}</strong><b aria-hidden="true">›</b></button>)}</div>
       </aside>}
-      <div className="detail-links"><a className="primary-button link-button" href={payload.links.scriberr}>Open in Scriberr ↗</a>{payload.links.notion && <a className="secondary-button link-button" href={payload.links.notion}>Open in Notion ↗</a>}<button className="secondary-button" disabled={!payload.actions.retranscription.canRequest || Boolean(actionRunning)} onClick={() => setConfirmRetranscription(true)}>Re-transcribe</button></div>
+      <div className="detail-links"><a className="primary-button link-button" href={payload.links.scriberr}>Open in Scriberr ↗</a>{payload.links.notion && <a className="secondary-button link-button" href={payload.links.notion}>Open in Notion ↗</a>}<button className="secondary-button" disabled={!payload.actions.retranscription.canRequest || Boolean(actionRunning)} onClick={() => setConfirmRetranscription(true)}>{retranscribeLabel}</button></div>
       <div className="detail-grid">
         <DetailValue label="Filename" value={job.recording.filename ?? "—"} />
         <DetailValue label="Duration" value={formatDuration(job.recording.durationSeconds)} />
@@ -537,10 +540,10 @@ function JobDetails({ token, jobId, back, openJob }: { token: string; jobId: str
       </div>}
       {confirmRetranscription && <div className="modal-backdrop" role="presentation" onMouseDown={(event) => { if (event.target === event.currentTarget) setConfirmRetranscription(false); }}>
         <section className="confirmation-modal" role="dialog" aria-modal="true" aria-labelledby="retranscribe-title">
-          <div className="eyebrow">New processing attempt</div><h2 id="retranscribe-title">Re-transcribe this recording?</h2>
+          <div className="eyebrow">New processing attempt</div><h2 id="retranscribe-title">{failedState ? "Re-run this recording?" : "Re-transcribe this recording?"}</h2>
           <p>Scriberr will reuse the previous transcription settings and replace its current transcript and summary. Sidecarr will preserve the previous generated content in Notion and keep your Notes.</p>
           {job.state.includes("summary") && <p className="inline-note">The request will remain queued until the current summary finishes.</p>}
-          <div className="modal-actions"><button className="secondary-button" disabled={Boolean(actionRunning)} onClick={() => setConfirmRetranscription(false)}>Cancel</button><button className="primary-button" disabled={Boolean(actionRunning)} onClick={() => void mutate("retranscribe")}>{actionRunning === "retranscribe" ? "Requesting…" : "Re-transcribe"}</button></div>
+          <div className="modal-actions"><button className="secondary-button" disabled={Boolean(actionRunning)} onClick={() => setConfirmRetranscription(false)}>Cancel</button><button className="primary-button" disabled={Boolean(actionRunning)} onClick={() => void mutate("retranscribe")}>{actionRunning === "retranscribe" ? "Requesting…" : failedState ? "Re-run" : "Re-transcribe"}</button></div>
         </section>
       </div>}
     </section>
